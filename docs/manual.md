@@ -22,7 +22,7 @@
 11. [科研计算的收敛顺序](#11-科研计算的收敛顺序)
 12. [适用范围与尚未包含的物理](#12-适用范围与尚未包含的物理)
 13. [核心参考文献](#13-核心参考文献)
-附录：[函数索引](#附录-函数索引)
+    附录：[函数索引](#附录-函数索引)
 
 ---
 
@@ -76,11 +76,11 @@ $$
 
 ### 1.4 三种数值方法概览
 
-| 方法 | 目录 | 适用场景 |
-|------|------|---------|
+| 方法             | 目录      | 适用场景                                                  |
+| ---------------- | --------- | --------------------------------------------------------- |
 | **ST-PWE** | `core/` | Fourier 域求解，快速得到全频带结构，支持复数频率/波矢分析 |
-| **TMM** | `tmm/` | 时间转移矩阵，精确求解多层时间结构，验证复数能带 |
-| **FDTD** | `fdtd/` | 时域仿真，直观展示波包演化，验证理论预测 |
+| **TMM**    | `tmm/`  | 时间转移矩阵，精确求解多层时间结构，验证复数能带          |
+| **FDTD**   | `fdtd/` | 时域仿真，直观展示波包演化，验证理论预测                  |
 
 ---
 
@@ -159,6 +159,7 @@ sys = stpwe_build_system(epsCoeff,[],12,6,2*pi/Lambda,2*pi/T);
 ## 3. 参数设计：定义你的时空晶体
 
 这是整个流程的起点。你需要做三件事：
+
 1. 定义介电常数 $\varepsilon(x,t)$ 的空间分布和时空调制方式
 2. （可选）定义磁导率 $\mu(x,t)$
 3. 设定截断阶数 $N_{\text{space}}$ 和 $M_{\text{time}}$
@@ -167,9 +168,9 @@ sys = stpwe_build_system(epsCoeff,[],12,6,2*pi/Lambda,2*pi/T);
 
 直接提供 $\varepsilon_{mn}$ 的解析表达式。以 Park-Min Fig.2 为例，介电常数在一个周期内的构型：
 
-| $x$ 范围 | $\varepsilon(x,t)$ |
-|----------|-------------------|
-| $[0, \frac{3}{4}\Lambda)$ | $\varepsilon_1 = 2$（静态） |
+| $x$ 范围                        | $\varepsilon(x,t)$                                                  |
+| --------------------------------- | --------------------------------------------------------------------- |
+| $[0, \frac{3}{4}\Lambda)$       | $\varepsilon_1 = 2$（静态）                                         |
 | $[\frac{3}{4}\Lambda, \Lambda)$ | $\varepsilon_c[1 + \text{modDepth}\cdot\sin(\Omega t)]$（时空调制） |
 
 #### 步骤 1：加载预设参数
@@ -180,6 +181,7 @@ p = stm_preset_modulated_slab();
 ```
 
 > **关键参数设置建议：**
+>
 > - `modDepth` ∈ (0, 1)：调制深度越大，动量禁带越宽
 > - `OmegaBar`：调制频率与空间布里渊区边界的频率之比，决定禁带位置
 > - `Nspace` 和 `Mtime`：截断阶数，决定计算精度。正弦调制 `Mtime=1` 已精确；方波调制需要更大的 `Mtime`
@@ -239,8 +241,8 @@ table = stpwe_sample_fourier_coefficients(materialFun, ...
 epsCoeff = @(m, n) stpwe_lookup_coefficient(table, m, n);
 ```
 
-> | 参数 | 含义 | 建议值 |
-> |------|------|--------|
+> | 参数   | 含义                     | 建议值                         |
+> | ------ | ------------------------ | ------------------------------ |
 > | `Nx` | 每个空间周期内的采样点数 | `max(128, 8*numel(nOrders))` |
 > | `Nt` | 每个时间周期内的采样点数 | `max(128, 8*numel(mOrders))` |
 >
@@ -254,11 +256,12 @@ epsCoeff = @(m, n) double(n == 0) * temporal_binary_eps_coeff(m, epsA, epsB, dut
 ```
 
 > **三种方式对比：**
-> | 方式 | 优点 | 缺点 | 适用场景 |
-> |------|------|------|---------|
-> | A. 解析系数 | 精度最高，计算最快 | 需要推导解析式 | 标准波形（正弦、方波等） |
-> | B. 数值采样 | 通用性好 | 需要较高采样率 | 任意复杂波形 |
-> | C. 二元解析 | 对间断波形精确 | 收敛慢，需大 Mtime | 方波时间晶体 |
+>
+> | 方式        | 优点               | 缺点               | 适用场景                 |
+> | ----------- | ------------------ | ------------------ | ------------------------ |
+> | A. 解析系数 | 精度最高，计算最快 | 需要推导解析式     | 标准波形（正弦、方波等） |
+> | B. 数值采样 | 通用性好           | 需要较高采样率     | 任意复杂波形             |
+> | C. 二元解析 | 对间断波形精确     | 收敛慢，需大 Mtime | 方波时间晶体             |
 
 ---
 
@@ -282,16 +285,17 @@ sys = stpwe_build_system(epsCoeff, muCoeff, 12, 2, p.g, p.Omega);
 
 ### 4.2 参数说明
 
-| 参数 | 含义 | 典型值 |
-|------|------|--------|
-| `epsCoeff(m,n)` | 返回介电常数 $mn$ 阶 Fourier 系数的函数句柄 | — |
-| `muCoeff(m,n)` | 返回磁导率 $mn$ 阶 Fourier 系数的函数句柄 | `[]` 或 `@(m,n) double(m==0 && n==0)` |
-| `Nspace` | 空间截断阶数 $n \in [-N_{\text{space}}, N_{\text{space}}]$ | 静态区 5-15，时空区 8-20 |
-| `Mtime` | 时间截断阶数 $m \in [-M_{\text{time}}, M_{\text{time}}]$ | 正弦 1-2，方波 15-30 |
-| `g` | 空间倒格矢 $2\pi/\Lambda$ | — |
-| `Omega` | 时间调制角频率 $2\pi/T$ | — |
+| 参数              | 含义                                                        | 典型值                                    |
+| ----------------- | ----------------------------------------------------------- | ----------------------------------------- |
+| `epsCoeff(m,n)` | 返回介电常数$mn$ 阶 Fourier 系数的函数句柄                | —                                        |
+| `muCoeff(m,n)`  | 返回磁导率$mn$ 阶 Fourier 系数的函数句柄                  | `[]` 或 `@(m,n) double(m==0 && n==0)` |
+| `Nspace`        | 空间截断阶数$n \in [-N_{\text{space}}, N_{\text{space}}]$ | 静态区 5-15，时空区 8-20                  |
+| `Mtime`         | 时间截断阶数$m \in [-M_{\text{time}}, M_{\text{time}}]$   | 正弦 1-2，方波 15-30                      |
+| `g`             | 空间倒格矢$2\pi/\Lambda$                                  | —                                        |
+| `Omega`         | 时间调制角频率$2\pi/T$                                    | —                                        |
 
 > **截断阶数选择技巧：**
+>
 > - **正弦调制**：$M_{\text{time}}=1$ 已精确（仅含 ±1 阶 Fourier 系数）
 > - **方波调制**：$M_{\text{time}}$ 需要 15-30 以收敛
 > - $N_{\text{space}}$ 取 8-12 通常已足够，论文级精度取 20
@@ -299,17 +303,17 @@ sys = stpwe_build_system(epsCoeff, muCoeff, 12, 2, p.g, p.Omega);
 
 ### 4.3 sys 结构体字段
 
-| 字段 | 大小 | 含义 |
-|------|------|------|
-| `sys.Nspace`, `sys.Mtime` | 标量 | 截断阶数 |
-| `sys.nList`, `sys.mList` | $S \times 1$ | 每个谐波对应的 $(n,m)$ 索引 |
-| `sys.S` | 标量 | 谐波总数 |
-| `sys.g`, `sys.Omega` | 标量 | 倒格矢和调制频率 |
-| `sys.Ceps`, `sys.Cmu` | $S \times S$ | 介电/磁导率卷积矩阵 |
-| `sys.G` | $S \times S$ | 空间波数矩阵 $\text{diag}(n·g)$ |
-| `sys.W` | $S \times S$ | 时间频率矩阵 $\text{diag}(m·\Omega)$ |
-| `sys.I`, `sys.Z` | $S \times S$ | 单位阵和零矩阵 |
-| `sys.Bomega` | $2S \times 2S$ | $\begin{bmatrix}0 & C_\mu \\ C_\varepsilon & 0\end{bmatrix}$ |
+| 字段                          | 大小             | 含义                                                           |
+| ----------------------------- | ---------------- | -------------------------------------------------------------- |
+| `sys.Nspace`, `sys.Mtime` | 标量             | 截断阶数                                                       |
+| `sys.nList`, `sys.mList`  | $S \times 1$   | 每个谐波对应的$(n,m)$ 索引                                   |
+| `sys.S`                     | 标量             | 谐波总数                                                       |
+| `sys.g`, `sys.Omega`      | 标量             | 倒格矢和调制频率                                               |
+| `sys.Ceps`, `sys.Cmu`     | $S \times S$   | 介电/磁导率卷积矩阵                                            |
+| `sys.G`                     | $S \times S$   | 空间波数矩阵$\text{diag}(n·g)$                              |
+| `sys.W`                     | $S \times S$   | 时间频率矩阵$\text{diag}(m·\Omega)$                         |
+| `sys.I`, `sys.Z`          | $S \times S$   | 单位阵和零矩阵                                                 |
+| `sys.Bomega`                | $2S \times 2S$ | $\begin{bmatrix}0 & C_\mu \\ C_\varepsilon & 0\end{bmatrix}$ |
 
 ---
 
@@ -339,19 +343,20 @@ colormap(flipud(gray));  colorbar;
 ```
 
 > **`sol` 结构体字段：**
-> | 字段 | 含义 |
-> |------|------|
-> | `sol.omega` | 所有本征值（复频率） |
+>
+> | 字段                 | 含义                                     |
+> | -------------------- | ---------------------------------------- |
+> | `sol.omega`        | 所有本征值（复频率）                     |
 > | `sol.R`, `sol.L` | 右/左特征向量矩阵，$L^\dagger B R = I$ |
-> | `sol.m0Weight` | 各模式的 $m=0$ 分量占比 |
+> | `sol.m0Weight`     | 各模式的$m=0$ 分量占比                 |
 
 #### 筛选参数建议
 
-| 参数 | 作用 | 默认值 |
-|------|------|--------|
-| `fMax` | 显示的最大频率 | 取决于研究范围 |
-| `imagTolerance` | 允许的 |Im(ω)| 上限 | `3e-3` 用于"准传播"模式 |
-| `weightThreshold` | 最小 m0 权重 | `0.035` 用于筛选物理模式 |
+| 参数                | 作用           | 默认值                     |
+| ------------------- | -------------- | -------------------------- |
+| `fMax`            | 显示的最大频率 | 取决于研究范围             |
+| `imagTolerance`   | 允许的         | Im(ω)                     |
+| `weightThreshold` | 最小 m0 权重   | `0.035` 用于筛选物理模式 |
 
 ### 5.2 固定 ω → 复 k（频率禁带分析）
 
@@ -450,6 +455,7 @@ end
 ```
 
 > **关键注意事项：**
+>
 > - `kGrid` 不包含重复右端点
 > - Wilson 链接幅值接近 1 时可靠；接近 0 时说明能带简并
 > - Zak 相位依赖于晶胞原点选择
@@ -502,11 +508,11 @@ fprintf('Chern number = %.12f\n', chern);      % 应 ≈ 1
 
 > `fhs_chern_number(rightStates, leftStates, metric)`
 >
-> | 参数 | 说明 | 大小 |
-> |------|------|------|
-> | `rightStates` | 右本征态 | `[Nbasis, Noccupied, Nk, Np]` |
-> | `leftStates` | 左本征态（Hermitian 时可省略）| 同上 |
-> | `metric` | 双正交度规矩阵（Hermitian 时可省略）| `[Nbasis, Nbasis]` |
+> | 参数            | 说明                                 | 大小                            |
+> | --------------- | ------------------------------------ | ------------------------------- |
+> | `rightStates` | 右本征态                             | `[Nbasis, Noccupied, Nk, Np]` |
+> | `leftStates`  | 左本征态（Hermitian 时可省略）       | 同上                            |
+> | `metric`      | 双正交度规矩阵（Hermitian 时可省略） | `[Nbasis, Nbasis]`            |
 
 `demos/demo08` 的 $C=1$ 来自 Rice–Mele 泵，是对通用 FHS 实现的独立测试。除非把目标 Maxwell/电路模型的本征态真正送入同一算法，否则这个整数不代表目标时空介质。
 
@@ -552,6 +558,7 @@ end
 ```
 
 > **`stpwe_reconstruct_field(mode, x, t, includeGrowth)`:**
+>
 > - `includeGrowth=false`：用 $\operatorname{Re}(\omega)$ 做载波（稳定传播）
 > - `includeGrowth=true`：用完整 $\omega$（含 $\operatorname{Im}(\omega)$ 增长因子）
 
@@ -646,12 +653,12 @@ grid on;
 
 > **Temporal 多层结构原理（类比空间多层膜）：**
 >
-> | 空间多层膜 | 时间多层结构 |
-> |-----------|-------------|
-> | 空间界面（不同 ε 的边界） | 时间界面（不同 ε 切换的时刻） |
-> | 传输矩阵法串联各层 | `temporal_multilayer_tmm` 按时间顺序串联 |
-> | k 频率守恒，ω 波矢改变 | k 波矢守恒，ω 频率改变 |
-> | Fresnel 公式 | Morgenthaler 矩阵 (`temporal_interface_matrix`) |
+> | 空间多层膜                 | 时间多层结构                                      |
+> | -------------------------- | ------------------------------------------------- |
+> | 空间界面（不同 ε 的边界） | 时间界面（不同 ε 切换的时刻）                    |
+> | 传输矩阵法串联各层         | `temporal_multilayer_tmm` 按时间顺序串联        |
+> | k 频率守恒，ω 波矢改变    | k 波矢守恒，ω 频率改变                           |
+> | Fresnel 公式               | Morgenthaler 矩阵 (`temporal_interface_matrix`) |
 
 ---
 
@@ -722,20 +729,20 @@ fprintf('|ρ|: analytic=%.5f, FDTD=%.5f\n', abs(rhoExact), norm(Eminus)/norm(Ebe
 
 > **FDTD 配置参数详解：**
 >
-> | 字段 | 含义 | 默认值 |
-> |------|------|--------|
-> | `cfg.x` | 均匀空间网格（至少 5 点/波长）| 必填 |
-> | `cfg.dt` | 时间步长 | 必填（建议 `0.8*dx/c0`）|
-> | `cfg.nSteps` | 总步数 | 必填 |
-> | `cfg.epsFun(x,t)` | 时变介电常数函数 | 必填 |
-> | `cfg.muFun(x,t)` | 时变磁导率函数 | `@(x,t) ones(size(x))` |
-> | `cfg.boundary` | `'sponge'` 或 `'periodic'` | `'sponge'` |
-> | `cfg.spongeCells` | 吸收边界宽度 | `min(80, floor(Nx/8))` |
-> | `cfg.spongeStrength` | 吸收强度 | `0.12` |
-> | `cfg.E0` | 初始电场 | 全零 |
-> | `cfg.Hhalf0` | 初始磁场（H 网格，t=-dt/2）| 全零 |
-> | `cfg.sourceD(x,t,step)` | 可选的 D 源项 | 无 |
-> | `cfg.recordEvery` | 记录间隔 | 1 |
+> | 字段                      | 含义                           | 默认值                    |
+> | ------------------------- | ------------------------------ | ------------------------- |
+> | `cfg.x`                 | 均匀空间网格（至少 5 点/波长） | 必填                      |
+> | `cfg.dt`                | 时间步长                       | 必填（建议`0.8*dx/c0`） |
+> | `cfg.nSteps`            | 总步数                         | 必填                      |
+> | `cfg.epsFun(x,t)`       | 时变介电常数函数               | 必填                      |
+> | `cfg.muFun(x,t)`        | 时变磁导率函数                 | `@(x,t) ones(size(x))`  |
+> | `cfg.boundary`          | `'sponge'` 或 `'periodic'` | `'sponge'`              |
+> | `cfg.spongeCells`       | 吸收边界宽度                   | `min(80, floor(Nx/8))`  |
+> | `cfg.spongeStrength`    | 吸收强度                       | `0.12`                  |
+> | `cfg.E0`                | 初始电场                       | 全零                      |
+> | `cfg.Hhalf0`            | 初始磁场（H 网格，t=-dt/2）    | 全零                      |
+> | `cfg.sourceD(x,t,step)` | 可选的 D 源项                  | 无                        |
+> | `cfg.recordEvery`       | 记录间隔                       | 1                         |
 
 ### 9.4 FDTD 稳定性
 
@@ -939,88 +946,88 @@ end
 
 ### `core/` — ST-PWE 核心计算
 
-| 函数 | 输入要点 | 输出要点 | 依赖 |
-|------|---------|---------|------|
-| `stpwe_build_system` | `(epsCoeff, muCoeff, Nspace, Mtime, g, Omega)` | `sys` 结构体 | — |
-| `stpwe_solve_omega` | `(sys, k)` | 复 $\omega$，`R`/`L` 本征向量，`m0Weight` | `stpwe_build_system` |
-| `stpwe_solve_k` | `(sys, omega)` | 复 $k$，`R`/`L` 本征向量 | `stpwe_build_system` |
-| `stpwe_fold_frequency` | `(omega, Omega)` | 折叠到 $[-\Omega/2,\Omega/2)$ 的频率 | — |
-| `stpwe_select_mode` | `(sys, kTarget, omegaTarget, [omegaWindow])` | `mode` 结构体 | `stpwe_solve_omega` |
-| `stpwe_reconstruct_field` | `(mode, x, t, [includeGrowth])` | 归一化 $E(x,t)$ 矩阵 | — |
-| `stpwe_static_bands` | `(kValues, epsCoeff0, Nspace, g, c0, nBands)` | `fBands` 矩阵 | — |
-| `stpwe_sample_fourier_coefficients` | `(materialFun, mOrders, nOrders, Lambda, T, Nx, Nt)` | `table` 结构体 | — |
-| `stpwe_lookup_coefficient` | `(table, m, n)` | Fourier 系数值 | 需要 `table` |
-| `stm_preset_modulated_slab` | — | Park-Min 模型参数结构体 `p` | — |
-| `stm_permittivity_modulated_slab` | `(x, t, p)` | $\varepsilon(x,t)$ 矩阵 | — |
-| `stm_fourier_modulated_slab` | `(m, n, p)` | $\varepsilon_{mn}$ 解析系数 | `stm_interval_fourier` |
-| `stm_interval_fourier` | `(n, xa, xb, Lambda)` | 子区间 Fourier 积分 | — |
-| `stm_redblue` | `(n)` | $n\times 3$ 色图 | — |
-| `stm_stft` | `(signal, dt, [window], [hop], [nFFT])` | 频谱，频率轴，时间轴 | — |
+| 函数                                  | 输入要点                                               | 输出要点                                         | 依赖                     |
+| ------------------------------------- | ------------------------------------------------------ | ------------------------------------------------ | ------------------------ |
+| `stpwe_build_system`                | `(epsCoeff, muCoeff, Nspace, Mtime, g, Omega)`       | `sys` 结构体                                   | —                       |
+| `stpwe_solve_omega`                 | `(sys, k)`                                           | 复$\omega$，`R`/`L` 本征向量，`m0Weight` | `stpwe_build_system`   |
+| `stpwe_solve_k`                     | `(sys, omega)`                                       | 复$k$，`R`/`L` 本征向量                    | `stpwe_build_system`   |
+| `stpwe_fold_frequency`              | `(omega, Omega)`                                     | 折叠到$[-\Omega/2,\Omega/2)$ 的频率            | —                       |
+| `stpwe_select_mode`                 | `(sys, kTarget, omegaTarget, [omegaWindow])`         | `mode` 结构体                                  | `stpwe_solve_omega`    |
+| `stpwe_reconstruct_field`           | `(mode, x, t, [includeGrowth])`                      | 归一化$E(x,t)$ 矩阵                            | —                       |
+| `stpwe_static_bands`                | `(kValues, epsCoeff0, Nspace, g, c0, nBands)`        | `fBands` 矩阵                                  | —                       |
+| `stpwe_sample_fourier_coefficients` | `(materialFun, mOrders, nOrders, Lambda, T, Nx, Nt)` | `table` 结构体                                 | —                       |
+| `stpwe_lookup_coefficient`          | `(table, m, n)`                                      | Fourier 系数值                                   | 需要`table`            |
+| `stm_preset_modulated_slab`         | —                                                     | Park-Min 模型参数结构体`p`                     | —                       |
+| `stm_permittivity_modulated_slab`   | `(x, t, p)`                                          | $\varepsilon(x,t)$ 矩阵                        | —                       |
+| `stm_fourier_modulated_slab`        | `(m, n, p)`                                          | $\varepsilon_{mn}$ 解析系数                    | `stm_interval_fourier` |
+| `stm_interval_fourier`              | `(n, xa, xb, Lambda)`                                | 子区间 Fourier 积分                              | —                       |
+| `stm_redblue`                       | `(n)`                                                | $n\times 3$ 色图                               | —                       |
+| `stm_stft`                          | `(signal, dt, [window], [hop], [nFFT])`              | 频谱，频率轴，时间轴                             | —                       |
 
 ### `tmm/` — 时间转移矩阵
 
-| 函数 | 输入要点 | 输出要点 | 依赖 |
-|------|---------|---------|------|
-| `temporal_interface_matrix` | `(ε_before, μ_before, ε_after, μ_after)` | `MM, τ, ρ` | — |
-| `temporal_delay_matrix` | `(ω_init, n_init, n_slab, duration)` | 延迟矩阵 | — |
-| `temporal_crystal_monodromy` | `(k, eps_seq, mu_seq, durations)` | 单值矩阵 $U$ | — |
-| `temporal_crystal_bands` | `(kValues, eps_seq, mu_seq, durations)` | 能带结构体 | `temporal_crystal_monodromy` |
-| `temporal_interface_matrix_jump` | 可选跃迁律 | 界面跃迁矩阵 | — |
-| `temporal_finite_crystal_response` | 有限周期参数 | 复方向输出 | — |
-| `temporal_domain_wall_mode` | 两个 PTC 参数 | 局域态匹配 | — |
-| `temporal_multilayer_tmm` | `(ω, ε_i, μ_i, ε_slabs, μ_slabs, durations, ε_f, μ_f)` | `TM, details` | `temporal_interface_matrix`, `temporal_delay_matrix` |
-| `temporal_tmm_spectrum` | `(ω_range, ...)` | 频谱结构体 | `temporal_multilayer_tmm` |
-| `temporal_binary_eps_coeff` | `(m, εA, εB, dutyA)` | Fourier 系数值 | — |
+| 函数                                 | 输入要点                                                        | 输出要点        | 依赖                                                     |
+| ------------------------------------ | --------------------------------------------------------------- | --------------- | -------------------------------------------------------- |
+| `temporal_interface_matrix`        | `(ε_before, μ_before, ε_after, μ_after)`                  | `MM, τ, ρ`  | —                                                       |
+| `temporal_delay_matrix`            | `(ω_init, n_init, n_slab, duration)`                         | 延迟矩阵        | —                                                       |
+| `temporal_crystal_monodromy`       | `(k, eps_seq, mu_seq, durations)`                             | 单值矩阵$U$   | —                                                       |
+| `temporal_crystal_bands`           | `(kValues, eps_seq, mu_seq, durations)`                       | 能带结构体      | `temporal_crystal_monodromy`                           |
+| `temporal_interface_matrix_jump`   | 可选跃迁律                                                      | 界面跃迁矩阵    | —                                                       |
+| `temporal_finite_crystal_response` | 有限周期参数                                                    | 复方向输出      | —                                                       |
+| `temporal_domain_wall_mode`        | 两个 PTC 参数                                                   | 局域态匹配      | —                                                       |
+| `temporal_multilayer_tmm`          | `(ω, ε_i, μ_i, ε_slabs, μ_slabs, durations, ε_f, μ_f)` | `TM, details` | `temporal_interface_matrix`, `temporal_delay_matrix` |
+| `temporal_tmm_spectrum`            | `(ω_range, ...)`                                             | 频谱结构体      | `temporal_multilayer_tmm`                              |
+| `temporal_binary_eps_coeff`        | `(m, εA, εB, dutyA)`                                        | Fourier 系数值  | —                                                       |
 
 ### `fdtd/` — 时域有限差分
 
-| 函数 | 输入要点 | 输出要点 | 依赖 |
-|------|---------|---------|------|
-| `fdtd1d_db` | `cfg` 结构体（见 §9） | `out` 结构体（含 E/H/能量历史） | — |
+| 函数          | 输入要点                 | 输出要点                          | 依赖 |
+| ------------- | ------------------------ | --------------------------------- | ---- |
+| `fdtd1d_db` | `cfg` 结构体（见 §9） | `out` 结构体（含 E/H/能量历史） | —   |
 
 ### `topology/` — 拓扑不变量
 
-| 函数 | 输入要点 | 输出要点 | 依赖 |
-|------|---------|---------|------|
-| `stpwe_bz_sewing_matrix` | `sys` | 置换矩阵 | `stpwe_build_system` |
-| `stpwe_track_band` | `(sys, kGrid, omegaSeed, options)` | `band` 结构体 | `stpwe_solve_omega` |
-| `zak_phase_biorthogonal` | `(rightStates, leftStates, metric, sewing)` | Zak 相位，`info` | — |
-| `fhs_chern_number` | `(rightStates, [leftStates], [metric])` | Chern 数，曲率，链接 | — |
+| 函数                       | 输入要点                                      | 输出要点             | 依赖                   |
+| -------------------------- | --------------------------------------------- | -------------------- | ---------------------- |
+| `stpwe_bz_sewing_matrix` | `sys`                                       | 置换矩阵             | `stpwe_build_system` |
+| `stpwe_track_band`       | `(sys, kGrid, omegaSeed, options)`          | `band` 结构体      | `stpwe_solve_omega`  |
+| `zak_phase_biorthogonal` | `(rightStates, leftStates, metric, sewing)` | Zak 相位，`info`   | —                     |
+| `fhs_chern_number`       | `(rightStates, [leftStates], [metric])`     | Chern 数，曲率，链接 | —                     |
 
 ### 顶层脚本
 
-| 函数 | 功能 | 依赖 |
-|------|------|------|
-| `stm_init()` | 设置路径，创建输出目录 | — |
-| `stm_run_examples(runHeavy)` | 按顺序运行所有示例 | 全部 |
-| `stm_selftest()` | 自检测试 | `core/`, `tmm/`, `fdtd/`, `topology/` |
+| 函数                           | 功能                   | 依赖                                          |
+| ------------------------------ | ---------------------- | --------------------------------------------- |
+| `stm_init()`                 | 设置路径，创建输出目录 | —                                            |
+| `stm_run_examples(runHeavy)` | 按顺序运行所有示例     | 全部                                          |
+| `stm_selftest()`             | 自检测试               | `core/`, `tmm/`, `fdtd/`, `topology/` |
 
 ### 示例脚本 (`examples/`)
 
-| 脚本 | 功能 | 依赖 |
-|------|------|------|
-| `example_floquet_bands_and_fields(quality)` | 重现 Park-Min 论文 Fig.2 | `core/` |
-| `example_complex_gaps()` | 复频率/复波数带隙 | `core/` |
-| `example_ptc_pwe_vs_tmm()` | PWE 与 TMM 交叉验证 | `core/`, `tmm/` |
-| `example_tmm_multilayer()` | 四类时间多层结构 | `tmm/` |
-| `example_fdtd_interface()` | 单个时间界面的波分裂 | `fdtd/`, `tmm/` |
-| `example_fdtd_wavepacket()` | 时空晶体中的波包演化 | `fdtd/`, `core/` |
-| `example_zak_phase()` | 双正交 Zak 相位计算 | `core/`, `topology/` |
-| `example_chern_pump()` | Rice-Mele 泵 Chern 数 | `topology/` |
+| 脚本                                          | 功能                     | 依赖                     |
+| --------------------------------------------- | ------------------------ | ------------------------ |
+| `example_floquet_bands_and_fields(quality)` | 重现 Park-Min 论文 Fig.2 | `core/`                |
+| `example_complex_gaps()`                    | 复频率/复波数带隙        | `core/`                |
+| `example_ptc_pwe_vs_tmm()`                  | PWE 与 TMM 交叉验证      | `core/`, `tmm/`      |
+| `example_tmm_multilayer()`                  | 四类时间多层结构         | `tmm/`                 |
+| `example_fdtd_interface()`                  | 单个时间界面的波分裂     | `fdtd/`, `tmm/`      |
+| `example_fdtd_wavepacket()`                 | 时空晶体中的波包演化     | `fdtd/`, `core/`     |
+| `example_zak_phase()`                       | 双正交 Zak 相位计算      | `core/`, `topology/` |
+| `example_chern_pump()`                      | Rice-Mele 泵 Chern 数    | `topology/`            |
 
 ### 演示脚本 (`demos/`)
 
-| 脚本 | 功能 | 依赖 |
-|------|------|------|
-| `demo01_reproduce_fig2_stpwe` | 重构 Park-Min 论文图 2 | `core/` |
-| `demo02_complex_frequency_and_momentum_gaps` | 复频率/复波数带隙 | `core/` |
-| `demo03_ptc_bands_pwe_vs_tmm` | PWE 与精确单周期 TMM 交叉验证 | `core/`, `tmm/` |
-| `demo04_temporal_multilayer_tmm` | Ramaccia 四类时间多层结构 | `tmm/` |
-| `demo05_fdtd_temporal_interface` | 单时间界面波分裂 | `fdtd/`, `tmm/` |
-| `demo06_fdtd_spacetime_wavepacket` | 时空晶体中的波包演化 | `core/`, `fdtd/` |
-| `demo07_zak_phase_stpwe` | 双正交 Zak 相位与诊断 | `core/`, `topology/` |
-| `demo08_fhs_chern_thouless_pump` | Rice-Mele 泵 FHS Chern 数 | `topology/` |
-| `demo09_finite_ptc_order_and_phase` | AB/BA 单胞的有限周期响应 | `tmm/` |
-| `demo10_temporal_domain_wall_mode` | 时间畴壁增长/衰减模匹配 | `tmm/` |
-| `demo11_coherent_time_interface` | 双输入相干碰撞与跃迁律 | `tmm/`, `fdtd/` |
-| `demo12_ptc_convergence_audit` | 二元时间晶体 PWE 收敛审计 | `core/`, `tmm/` |
+| 脚本                                           | 功能                          | 依赖                     |
+| ---------------------------------------------- | ----------------------------- | ------------------------ |
+| `demo01_reproduce_fig2_stpwe`                | 重构 Park-Min 论文图 2        | `core/`                |
+| `demo02_complex_frequency_and_momentum_gaps` | 复频率/复波数带隙             | `core/`                |
+| `demo03_ptc_bands_pwe_vs_tmm`                | PWE 与精确单周期 TMM 交叉验证 | `core/`, `tmm/`      |
+| `demo04_temporal_multilayer_tmm`             | Ramaccia 四类时间多层结构     | `tmm/`                 |
+| `demo05_fdtd_temporal_interface`             | 单时间界面波分裂              | `fdtd/`, `tmm/`      |
+| `demo06_fdtd_spacetime_wavepacket`           | 时空晶体中的波包演化          | `core/`, `fdtd/`     |
+| `demo07_zak_phase_stpwe`                     | 双正交 Zak 相位与诊断         | `core/`, `topology/` |
+| `demo08_fhs_chern_thouless_pump`             | Rice-Mele 泵 FHS Chern 数     | `topology/`            |
+| `demo09_finite_ptc_order_and_phase`          | AB/BA 单胞的有限周期响应      | `tmm/`                 |
+| `demo10_temporal_domain_wall_mode`           | 时间畴壁增长/衰减模匹配       | `tmm/`                 |
+| `demo11_coherent_time_interface`             | 双输入相干碰撞与跃迁律        | `tmm/`, `fdtd/`      |
+| `demo12_ptc_convergence_audit`               | 二元时间晶体 PWE 收敛审计     | `core/`, `tmm/`      |

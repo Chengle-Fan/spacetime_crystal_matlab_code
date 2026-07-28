@@ -21,6 +21,19 @@ for ik = 1:numel(kValues)
     omega = eig([K, Z; Z, K], B);
     good = isfinite(omega) & abs(imag(omega)) < 1e-8 & real(omega) >= -1e-9;
     omega = sort(real(omega(good)));
+    % At k = 0 the matrix K = diag(n*g) has a zero on the n = 0
+    % diagonal entry, making A = [K, Z; Z, K] singular.  The
+    % generalized eigenvalue problem then produces two ω ≈ 0
+    % eigenvalues (one from the E-block nullspace, one from the
+    % H-block).  Only one is physical — the Γ-point crossing of
+    % the forward-traveling wave.  The duplicate shifts all
+    % subsequent band indices at k = 0, creating an artificial
+    % "spike" where the plotted row jumps between distinct bands.
+    idxZero = abs(omega) < 1e-8;
+    if sum(idxZero) > 1
+        omega = omega(~idxZero);       % remove all near-zero
+        omega = [0; omega];            % keep exactly one
+    end
     take = min(nBands, numel(omega));
     % Since Lambda=2*pi/g, fBar=omega*Lambda/(2*pi*c0).
     fBands(1:take,ik) = omega(1:take)/(g*c0);
