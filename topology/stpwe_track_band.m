@@ -30,6 +30,7 @@ omegaTrack = complex(zeros(1,Nk));
 weightTrack = zeros(1,Nk);
 selectedId = zeros(1,Nk);
 continuity = ones(1,Nk);
+neighborGap = inf(1,Nk);
 
 for ik = 1:Nk
     sol = stpwe_solve_omega(sys,kGrid(ik));
@@ -49,15 +50,20 @@ for ik = 1:Nk
             + 0.01*(1-sol.m0Weight(ids));
     else
         prevR = Rtrack(:,ik-1);
-        overlap = complex(zeros(size(ids)));
+        prevL = Ltrack(:,ik-1);
+        fidelity = zeros(size(ids));
         for q = 1:numel(ids)
-            candidate = sol.R(:,ids(q));
-            overlap(q) = (prevR'*candidate) ...
-                /(norm(prevR)*norm(candidate));
+            candidateR = sol.R(:,ids(q));
+            candidateL = sol.L(:,ids(q));
+            forward = prevL'*sys.Bomega*candidateR;
+            backward = candidateL'*sys.Bomega*prevR;
+            % This geometric mean is invariant under reciprocal rescaling
+            % of a right/left generalized eigenvector pair.
+            fidelity(q) = sqrt(abs(forward*backward));
         end
         frequencyStep = abs(sol.omega(ids)-omegaTrack(ik-1)) ...
             /max(sys.Omega,abs(omegaTrack(ik-1)));
-        cost = 1-abs(overlap) + 0.15*frequencyStep ...
+        cost = 1-min(fidelity,1) + 0.15*frequencyStep ...
             + 0.01*(1-sol.m0Weight(ids));
     end
 
@@ -67,13 +73,19 @@ for ik = 1:Nk
     L = sol.L(:,id);
 
     if ik > 1
-        link = Ltrack(:,ik-1)'*sys.Bomega*R;
-        continuity(ik) = abs(link);
-        if abs(link) > 1e-14
-            phase = exp(-1i*angle(link));
+        forward = Ltrack(:,ik-1)'*sys.Bomega*R;
+        backward = L'*sys.Bomega*Rtrack(:,ik-1);
+        continuity(ik) = sqrt(abs(forward*backward));
+        if abs(forward) > 1e-14
+            phase = exp(-1i*angle(forward));
             R = R*phase;
             L = L*phase;
         end
+    end
+
+    otherIds = ids(ids ~= id);
+    if ~isempty(otherIds)
+        neighborGap(ik) = min(abs(sol.omega(otherIds)-sol.omega(id)));
     end
 
     Rtrack(:,ik) = R;
@@ -90,4 +102,5 @@ band.L = Ltrack;
 band.m0Weight = weightTrack;
 band.selectedId = selectedId;
 band.continuity = continuity;
+band.neighborGap = neighborGap;
 end

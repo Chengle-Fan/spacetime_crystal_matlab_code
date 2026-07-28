@@ -1,0 +1,4 @@
+2.0.0
+
+Research-oriented review against the 20-file Photonic space-time crystal
+reference collection. See VALIDATION.md for verified scope and limitations.

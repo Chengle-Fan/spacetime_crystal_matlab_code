@@ -6,10 +6,12 @@ function [MM, tau, rho] = temporal_interface_matrix( ...
 %   after = MM*before,  MM=[tau rho; rho tau].
 %
 % This is Eq. (5) of Ramaccia et al., APL 118, 101901 (2021).
+%
+% D/B continuity is a constitutive-switching model, not a universal rule
+% for every experimental time boundary. Use
+% TEMPORAL_INTERFACE_MATRIX_JUMP when the switching circuit or microscopic
+% model preserves E, injects charge, or otherwise changes the jump laws.
 
-ratioD = epsBefore/epsAfter;
-ratioDB = sqrt((epsBefore*muBefore)/(epsAfter*muAfter));
-tau = 0.5*(ratioD + ratioDB);
-rho = 0.5*(ratioD - ratioDB);
-MM = [tau, rho; rho, tau];
+[MM, tau, rho] = temporal_interface_matrix_jump( ...
+    epsBefore, muBefore, epsAfter, muAfter, 'DB');
 end

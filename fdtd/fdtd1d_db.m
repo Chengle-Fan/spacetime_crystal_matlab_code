@@ -15,6 +15,10 @@ function out = fdtd1d_db(cfg)
 %   spongeCells      default min(80,floor(Nx/8))
 %   spongeStrength   per-step damping strength, default 0.12
 %   recordEvery      default 1
+%   storeFields      store full E/H histories; default true
+%   probeIndices     E-grid indices recorded even if storeFields=false
+%   stabilityTimes   times sampled for a positive-medium CFL audit
+%   maxWaveSpeed     optional certified maximum wave speed
 %   sourceD(x,t,n)   optional additive D increment after each update
 %
 % D and B, rather than E and H, are advanced. Consequently an abrupt
@@ -49,6 +53,20 @@ if ~isfield(cfg,'recordEvery') || isempty(cfg.recordEvery)
 else
     recordEvery = cfg.recordEvery;
 end
+if ~isfield(cfg,'storeFields') || isempty(cfg.storeFields)
+    storeFields = true;
+else
+    storeFields = logical(cfg.storeFields);
+end
+if ~isfield(cfg,'probeIndices') || isempty(cfg.probeIndices)
+    probeIndices = zeros(1,0);
+else
+    probeIndices = unique(cfg.probeIndices(:).');
+    if any(probeIndices < 1) || any(probeIndices > Nx) || ...
+            any(probeIndices ~= round(probeIndices))
+        error('cfg.probeIndices must contain valid integer E-grid indices.');
+    end
+end
 
 switch boundary
     case 'periodic'
@@ -79,8 +97,48 @@ end
 
 epsNow = cfg.epsFun(x,0);
 muHalf = muFun(xH,-dt/2);
+if numel(epsNow) ~= Nx || numel(muHalf) ~= numel(xH)
+    error('epsFun or muFun returned an array with the wrong grid size.');
+end
 D = epsNow.*E;
 B = muHalf.*H;
+
+% A sampled CFL audit is useful for ordinary positive nondispersive media.
+% For dispersive, negative-index, or active constitutive models the scalar
+% phase speed is not a sufficient stability criterion.
+if isfield(cfg,'maxWaveSpeed') && ~isempty(cfg.maxWaveSpeed)
+    sampledMaxWaveSpeed = cfg.maxWaveSpeed;
+else
+    if isfield(cfg,'stabilityTimes') && ~isempty(cfg.stabilityTimes)
+        stabilityTimes = cfg.stabilityTimes(:).';
+    else
+        stabilityTimes = linspace(0,nSteps*dt,9);
+    end
+    sampledMaxWaveSpeed = 0;
+    for tq = stabilityTimes
+        epsSample = cfg.epsFun(x,tq);
+        muSample = muFun(x,tq);
+        if numel(epsSample) ~= Nx || numel(muSample) ~= Nx
+            error(['epsFun and muFun must return the same size as their ', ...
+                'input grid during the CFL audit.']);
+        end
+        ordinaryPositive = all(abs(imag(epsSample)) < 1e-12) ...
+            && all(abs(imag(muSample)) < 1e-12) ...
+            && all(real(epsSample) > 0) && all(real(muSample) > 0);
+        if ~ordinaryPositive
+            sampledMaxWaveSpeed = nan;
+            break;
+        end
+        sampledMaxWaveSpeed = max(sampledMaxWaveSpeed, ...
+            max(1./sqrt(real(epsSample).*real(muSample))));
+    end
+end
+sampledCourant = sampledMaxWaveSpeed*dt/dx;
+if isfinite(sampledCourant) && sampledCourant >= 1
+    error(['Sampled one-dimensional CFL number is %.6g >= 1. ', ...
+        'Reduce cfg.dt or provide a validated constitutive update.'], ...
+        sampledCourant);
+end
 
 dampE = ones(size(x));
 dampH = ones(size(xH));
@@ -106,15 +164,26 @@ if strcmp(boundary,'sponge')
 end
 
 nRecords = floor(nSteps/recordEvery) + 1;
-EHistory = complex(zeros(nRecords,Nx));
-HHistory = complex(zeros(nRecords,Nx));
+if storeFields
+    EHistory = complex(zeros(nRecords,Nx));
+    HHistory = complex(zeros(nRecords,Nx));
+else
+    EHistory = complex(zeros(0,Nx));
+    HHistory = complex(zeros(0,Nx));
+end
+probeE = complex(zeros(nRecords,numel(probeIndices)));
+probeH = complex(zeros(nRecords,numel(probeIndices)));
 tHistory = zeros(nRecords,1);
 energy = zeros(nRecords,1);
 
 recordId = 1;
 [HOnE, BOnE] = yee_h_to_e_grid(H,B,boundary,Nx);
-EHistory(recordId,:) = E;
-HHistory(recordId,:) = HOnE;
+if storeFields
+    EHistory(recordId,:) = E;
+    HHistory(recordId,:) = HOnE;
+end
+probeE(recordId,:) = E(probeIndices);
+probeH(recordId,:) = HOnE(probeIndices);
 energy(recordId) = 0.5*dx*sum(real(conj(E).*D + conj(HOnE).*BOnE));
 
 for step = 1:nSteps
@@ -151,8 +220,12 @@ for step = 1:nSteps
     if mod(step,recordEvery) == 0
         recordId = recordId + 1;
         [HOnE, BOnE] = yee_h_to_e_grid(H,B,boundary,Nx);
-        EHistory(recordId,:) = E;
-        HHistory(recordId,:) = HOnE;
+        if storeFields
+            EHistory(recordId,:) = E;
+            HHistory(recordId,:) = HOnE;
+        end
+        probeE(recordId,:) = E(probeIndices);
+        probeH(recordId,:) = HOnE(probeIndices);
         tHistory(recordId) = tNow;
         energy(recordId) = 0.5*dx*sum(real( ...
             conj(E).*D + conj(HOnE).*BOnE));
@@ -164,6 +237,10 @@ out.xH = xH;
 out.t = tHistory;
 out.E = EHistory;
 out.H = HHistory;
+out.probeIndices = probeIndices;
+out.probeX = x(probeIndices);
+out.probeE = probeE;
+out.probeH = probeH;
 out.energy = energy;
 out.finalD = D;
 out.finalB = B;
@@ -172,6 +249,9 @@ out.finalH = H;
 out.dx = dx;
 out.dt = dt;
 out.boundary = boundary;
+out.storeFields = storeFields;
+out.sampledMaxWaveSpeed = sampledMaxWaveSpeed;
+out.sampledCourant = sampledCourant;
 end
 
 function [HOnE, BOnE] = yee_h_to_e_grid(H,B,boundary,Nx)
