@@ -1,5 +1,10 @@
 # Validation record — v2
 
+> This document corresponds to the original `VALIDATION.md`.
+> Back to [README.md](../README.md)
+
+---
+
 The package was checked at three levels before packaging.
 
 ## Static syntax
@@ -44,4 +49,4 @@ CFL/probe, and uniform-FDTD checks in MATLAB.
 
 The new domain-wall test establishes a transfer-matrix localized state. It
 does not substitute for the temporal Zak Wilson loop listed as the first
-research extension in `RESEARCH_ROADMAP_CN.md`.
+research extension in [roadmap.md](roadmap.md).
