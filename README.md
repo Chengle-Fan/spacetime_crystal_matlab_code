@@ -52,7 +52,7 @@ run_all_demos(true)    % 完整（含论文级精度）
 | `fdtd/` | 一维 D/B-Yee 时域有限差分 |
 | `topology/` | 拓扑不变量（Zak 相位、Chern 数） |
 | `demos/` | 12 个论文复现演示脚本（v2） |
-| `examples/` | 8 个示例脚本（v1） |
+| `examples/` | 10 个示例脚本（v1） |
 | `tests/` | 测试脚本 |
 
 ### 版本说明 / Version Notes

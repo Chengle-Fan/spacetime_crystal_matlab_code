@@ -1,90 +1,4 @@
-# STM 工具包用户手册：时空光子晶体计算
-
-> **STM (Space-Time Media) Toolbox** — 一维时空调制介质的光子能带结构、拓扑不变量和时域仿真
->
-> 本文档合并原 `MANUAL.md` 和 `README_CN.md`（§3-10），去重后形成完整的中文技术手册。
-> 返回 [README.md](../README.md) · 参见 [conventions.md](conventions.md)（物理约定）· [paper-map.md](paper-map.md)（文献覆盖）
-
----
-
-## 目录
-
-1. [统一场与 Fourier 约定](#1-统一场与-fourier-约定)
-2. [ST-PWE 的两种本征问题](#2-st-pwe-的两种本征问题)
-3. [参数设计：定义时空晶体](#3-参数设计定义你的时空晶体)
-4. [构建系统矩阵](#4-构建系统矩阵)
-5. [能带结构计算](#5-能带结构计算)
-6. [拓扑不变量计算](#6-拓扑不变量计算)
-7. [场分布图绘制](#7-场分布图绘制)
-8. [TMM 交叉验证](#8-tmm-交叉验证)
-9. [FDTD 时域仿真验证](#9-fdtd-时域仿真验证)
-10. [完整科研流程示例](#10-完整科研流程示例)
-11. [科研计算的收敛顺序](#11-科研计算的收敛顺序)
-12. [适用范围与尚未包含的物理](#12-适用范围与尚未包含的物理)
-13. [核心参考文献](#13-核心参考文献)
-    附录：[函数索引](#附录-函数索引)
-
----
-
-## 1. 统一场与 Fourier 约定
-
-### 1.1 场展开
-
-ST-PWE 使用
-
-$$
-\begin{pmatrix}E\\H\end{pmatrix}
-=e^{i(kx-\omega t)}
-\sum_{m,n}\widetilde{\Psi}_{m,n}
-e^{i(ng x-m\Omega t)} .
-$$
-
-材料参数写为
-
-$$
-p(x,t)=\sum_{m,n}p_{m,n}e^{i(ng x-m\Omega t)} .
-$$
-
-因此 Fourier 系数是
-
-$$
-p_{m,n}=\frac{1}{\Lambda T}
-\int_0^\Lambda\int_0^T
-p(x,t)e^{-ingx+im\Omega t}\,dt\,dx .
-$$
-
-### 1.2 增长符号
-
-在此约定下：
-
-- $\operatorname{Im}\omega>0$ 表示 $e^{-i\omega t}$ 随时间**增长**；
-- $\operatorname{Im}\omega<0$ 表示衰减；
-- $\operatorname{Im}k>0$ 或 $<0$ 的物理解读取决于空间传播方向和所选边界条件。
-
-> **注意：** Ramaccia 时间多层示例沿用其论文的 $e^{+i\omega t}$ 符号。比较幅度不受影响；比较复相位时必须先统一约定（见 §8）。
-
-### 1.3 归一化
-
-Park-Min 图 2 的默认归一化为
-
-$$
-\Lambda=c=1,\quad
-\bar{k}=\frac{k\Lambda}{2\pi},\quad
-\bar{f}=\frac{\omega\Lambda}{2\pi c},\quad
-\bar{\Omega}=0.2 .
-$$
-
-### 1.4 三种数值方法概览
-
-| 方法             | 目录      | 适用场景                                                  |
-| ---------------- | --------- | --------------------------------------------------------- |
-| **ST-PWE** | `core/` | Fourier 域求解，快速得到全频带结构，支持复数频率/波矢分析 |
-| **TMM**    | `tmm/`  | 时间转移矩阵，精确求解多层时间结构，验证复数能带          |
-| **FDTD**   | `fdtd/` | 时域仿真，直观展示波包演化，验证理论预测                  |
-
----
-
-## 2. ST-PWE 的两种本征问题
+m
 
 ### 2.1 固定 k → 复 ω（动量禁带分析）
 
@@ -1004,16 +918,18 @@ end
 
 ### 示例脚本 (`examples/`)
 
-| 脚本                                          | 功能                     | 依赖                     |
-| --------------------------------------------- | ------------------------ | ------------------------ |
-| `example_floquet_bands_and_fields(quality)` | 重现 Park-Min 论文 Fig.2 | `core/`                |
-| `example_complex_gaps()`                    | 复频率/复波数带隙        | `core/`                |
-| `example_ptc_pwe_vs_tmm()`                  | PWE 与 TMM 交叉验证      | `core/`, `tmm/`      |
-| `example_tmm_multilayer()`                  | 四类时间多层结构         | `tmm/`                 |
-| `example_fdtd_interface()`                  | 单个时间界面的波分裂     | `fdtd/`, `tmm/`      |
-| `example_fdtd_wavepacket()`                 | 时空晶体中的波包演化     | `fdtd/`, `core/`     |
-| `example_zak_phase()`                       | 双正交 Zak 相位计算      | `core/`, `topology/` |
-| `example_chern_pump()`                      | Rice-Mele 泵 Chern 数    | `topology/`            |
+| 脚本                                          | 功能                                   | 依赖                     |
+| --------------------------------------------- | -------------------------------------- | ------------------------ |
+| `example_floquet_bands_and_fields(quality)` | 重现 Park-Min 论文 Fig.2               | `core/`                |
+| `example_band_comparison(quality)`          | 三图分离对比静态/空晶格/Floquet 能带   | `core/`                |
+| `example_complex_gaps()`                    | 复频率/复波数带隙                      | `core/`                |
+| `example_dual_sweep_bands(quality)`         | 双扫互补（k→ω 2D + ω→k 3D + 叠加） | `core/`                |
+| `example_ptc_pwe_vs_tmm()`                  | PWE 与 TMM 交叉验证                    | `core/`, `tmm/`      |
+| `example_tmm_multilayer()`                  | 四类时间多层结构                       | `tmm/`                 |
+| `example_fdtd_interface()`                  | 单个时间界面的波分裂                   | `fdtd/`, `tmm/`      |
+| `example_fdtd_wavepacket()`                 | 时空晶体中的波包演化                   | `fdtd/`, `core/`     |
+| `example_zak_phase()`                       | 双正交 Zak 相位计算                    | `core/`, `topology/` |
+| `example_chern_pump()`                      | Rice-Mele 泵 Chern 数                  | `topology/`            |
 
 ### 演示脚本 (`demos/`)
 
