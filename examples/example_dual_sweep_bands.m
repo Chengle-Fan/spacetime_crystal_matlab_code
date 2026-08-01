@@ -29,8 +29,8 @@ switch lower(quality)
         Nw = 161;
     case 'quick'
         Nspace = 10;
-        Nk = 101;
-        Nw = 81;
+        Nk = 191;
+        Nw = 161;
     otherwise
         error('quality must be ''quick'' or ''paper''.');
 end
