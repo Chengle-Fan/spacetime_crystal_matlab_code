@@ -134,6 +134,10 @@ function out = fdtd1d_db(cfg)
 %     stabilityTimes   - CFL 审计的采样时刻数组
 %     maxWaveSpeed     - 手动指定的最大波速，跳过采样审计
 %     sourceD(x,t,n)   - D 场增量源函数句柄，在每个时间步更新 D 后调用
+%     precision       - 数值精度: 'double'（默认）或 'single'
+%                       'single' 可节省约 50% 内存，适合大规模/长时仿真
+%     progressBar     - 是否显示进度条: true 或 false（默认）
+%                       长仿真时建议开启，方便监控推进进度
 
 %   ▏  输出结构体
 %
@@ -227,6 +231,26 @@ else
     end
 end
 
+% --- 数值精度 ---
+% 默认双精度；可选 'single' 以节省内存并可能加速
+if ~isfield(cfg,'precision') || isempty(cfg.precision)
+    precision = 'double';
+else
+    precision = lower(cfg.precision);
+    if ~ismember(precision, {'double','single'})
+        error('cfg.precision must be ''double'' or ''single''.');
+    end
+end
+useSingle = strcmp(precision,'single');
+
+% --- 进度条 ---
+% 长仿真时显示进度条，方便监控推进进度
+if ~isfield(cfg,'progressBar') || isempty(cfg.progressBar)
+    showProgress = false;
+else
+    showProgress = logical(cfg.progressBar);
+end
+
 %==========================================================================
 % 第 3 部分: 构造 Yee 网格（空间交错排布）
 %==========================================================================
@@ -291,6 +315,14 @@ end
 % 通过本构关系从 E/H 得到 D/B —— 之后只更新 D 和 B
 D = epsNow.*E;                  % D = ε_r · E
 B = muHalf.*H;                  % B = μ_r · H
+
+% --- 若启用单精度，将工作数组转换为 single ---
+if useSingle
+    D = single(D);
+    B = single(B);
+    E = single(E);
+    H = single(H);
+end
 
 %==========================================================================
 % 第 6 部分: 采样 CFL 稳定性审计
@@ -414,6 +446,12 @@ if strcmp(boundary,'sponge')
     dampH(maskH) = exp(-spongeStrength*sH.^3);
 end
 
+% --- 若启用单精度，将衰减因子也转为 single ---
+if useSingle
+    dampE = single(dampE);
+    dampH = single(dampH);
+end
+
 %==========================================================================
 % 第 8 部分: 分配历史记录数组
 %==========================================================================
@@ -421,21 +459,28 @@ end
 % 记录总次数 = floor(N_t / recordEvery) + 1（含第 0 步的初始状态）
 nRecords = floor(nSteps/recordEvery) + 1;
 
+% 根据精度选择基础类型，用于历史数组分配
+if useSingle
+    baseZero = single(0);
+else
+    baseZero = double(0);
+end
+
 if storeFields
     % 存储完整 E/H 历史: 每行是一个时刻，每列是一个空间格点
-    EHistory = complex(zeros(nRecords,Nx));
-    HHistory = complex(zeros(nRecords,Nx));
+    EHistory = complex(zeros(nRecords,Nx,'like',baseZero));
+    HHistory = complex(zeros(nRecords,Nx,'like',baseZero));
 else
     % 低内存模式: 不分配全域历史空间
-    EHistory = complex(zeros(0,Nx));
-    HHistory = complex(zeros(0,Nx));
+    EHistory = complex(zeros(0,Nx,'like',baseZero));
+    HHistory = complex(zeros(0,Nx,'like',baseZero));
 end
 
 % 探针记录: 无论 storeFields 如何，探针总是被记录
-probeE = complex(zeros(nRecords,numel(probeIndices)));
-probeH = complex(zeros(nRecords,numel(probeIndices)));
+probeE = complex(zeros(nRecords,numel(probeIndices),'like',baseZero));
+probeH = complex(zeros(nRecords,numel(probeIndices),'like',baseZero));
 
-% 记录时刻和能量
+% 记录时刻和能量（始终为 double，因为它们是时间标签和标量汇总）
 tHistory = zeros(nRecords,1);
 energy = zeros(nRecords,1);
 
@@ -483,6 +528,15 @@ energy(recordId) = 0.5*dx*sum(real(conj(E).*D + conj(HOnE).*BOnE));
 %   └─────────────────────────────────────────────────────────┘
 %
 
+% --- 初始化进度条 ---
+if showProgress
+    % 使用文本进度条（fprintf），兼容无图形界面的环境
+    fprintf('FDTD 1D D/B-Yee: 共 %d 步, 开始推进...\n', nSteps);
+    progressInterval = max(1, floor(nSteps/50));  % 每 2% 更新一次
+    progressNextTick = progressInterval;
+    ticProg = tic;
+end
+
 for step = 1:nSteps
     % =====================================================================
     % 步骤 A: 法拉第定律 —— 更新 B（从 n-1/2 到 n+1/2）
@@ -509,6 +563,7 @@ for step = 1:nSteps
     % 时间: tHalf = (step - 0.5)·dt，即 n+1/2 步
     tHalf = (step-0.5)*dt;
     muHalf = muFun(xH,tHalf);       % 在 H 网格、当前时刻采样 μ_r
+    if useSingle; muHalf = single(muHalf); end
     H = B./muHalf;                  % H = B / (μ₀·μ_r)，本构关系
 
     % =====================================================================
@@ -535,7 +590,9 @@ for step = 1:nSteps
     % --- 注入源项（可选）---
     % 通过向 D 添加增量实现"软源"注入，避免了硬源对反射波的阻挡
     if isfield(cfg,'sourceD') && ~isempty(cfg.sourceD)
-        D = D + cfg.sourceD(x,tNow,step);
+        srcVal = cfg.sourceD(x,tNow,step);
+        if useSingle; srcVal = single(srcVal); end
+        D = D + srcVal;
     end
 
     % --- 施加 sponge 衰减 ---
@@ -543,6 +600,7 @@ for step = 1:nSteps
 
     % --- 通过本构关系恢复 E ---
     epsNow = cfg.epsFun(x,tNow);    % 在 E 网格、当前时刻采样 ε_r
+    if useSingle; epsNow = single(epsNow); end
     E = D./epsNow;                  % E = D / (ε₀·ε_r)，本构关系
 
     % =====================================================================
@@ -572,6 +630,22 @@ for step = 1:nSteps
         energy(recordId) = 0.5*dx*sum(real( ...
             conj(E).*D + conj(HOnE).*BOnE));
     end
+
+    % --- 更新进度条 ---
+    if showProgress && step >= progressNextTick
+        elapsed = toc(ticProg);
+        pct = step/nSteps*100;
+        eta = elapsed/step*(nSteps-step);  % 预计剩余时间
+        fprintf('  进度: %5.1f%% | 当前步: %d/%d | 已用: %.1fs | 预计剩余: %.1fs\n', ...
+            pct, step, nSteps, elapsed, eta);
+        progressNextTick = step + progressInterval;
+    end
+end
+
+% --- 关闭进度条 ---
+if showProgress
+    totalTime = toc(ticProg);
+    fprintf('FDTD 1D D/B-Yee: 完成 %d 步, 总用时 %.1f s.\n', nSteps, totalTime);
 end
 
 %==========================================================================
@@ -598,6 +672,7 @@ out.boundary = boundary;            % 边界条件类型
 out.storeFields = storeFields;      % 场存储模式
 out.sampledMaxWaveSpeed = sampledMaxWaveSpeed;  % CFL 审计波速
 out.sampledCourant = sampledCourant;            % CFL 审计 Courant 数
+out.precision = precision;                      % 数值精度
 
 end
 
