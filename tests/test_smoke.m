@@ -113,11 +113,92 @@ cfg.Hhalf0 = Hhalf0;
 cfg.boundary = 'periodic';
 cfg.recordEvery = 4;
 cfg.probeIndices = [1 17];
+cfg.storeFields = false;
+cfg.storeD = true;
 fdtd = fdtd1d_db(cfg);
 relativeEnergyDrift = max(abs(fdtd.energy/fdtd.energy(1)-1));
 assert(relativeEnergyDrift < 0.08, 'Uniform-medium FDTD is unstable.');
 assert(fdtd.sampledCourant < 1 && size(fdtd.probeE,2) == 2, ...
     'FDTD CFL audit or probe recording failed.');
+expectedRecords = floor(cfg.nSteps/cfg.recordEvery)+1;
+assert(isequal(size(fdtd.D),[expectedRecords,Nx]) && ...
+    isempty(fdtd.E) && isempty(fdtd.H), ...
+    'Independent D-history storage failed.');
+assert(norm(fdtd.D(1,:)-n^2*E0)/norm(n^2*E0) < 1e-13, ...
+    'The initial D-history record is inconsistent with epsilon*E0.');
+
+% One binary temporal unit cell: event-aware FDTD should agree with the
+% exact D/B monodromy for a periodic plane wave.
+epsCell = [3 1];
+durationsCell = [0.5 0.5];
+TCell = sum(durationsCell);
+kCell = 4;
+nWavelengths = 4;
+NxCell = 512;
+LCell = nWavelengths*2*pi/kCell;
+dxCell = LCell/NxCell;
+xCell = (0:NxCell-1)*dxCell;
+xHCell = xCell+dxCell/2;
+stepsPerHalfCell = 64;
+dtCell = durationsCell(1)/stepsPerHalfCell;
+nStepsCell = round(TCell/dtCell);
+nCell = sqrt(epsCell(1));
+E0Cell = exp(1i*kCell*xCell);
+Hhalf0Cell = nCell*exp(1i*kCell*(xHCell+dtCell/(2*nCell)));
+epsCellFun = @(xq,tq) (epsCell(1)*double(tq < durationsCell(1)) + ...
+    epsCell(2)*double(tq >= durationsCell(1)))*ones(size(xq));
+cfgCell = struct('x',xCell,'dt',dtCell,'nSteps',nStepsCell, ...
+    'epsFun',epsCellFun,'muFun',@(xq,tq) ones(size(xq)), ...
+    'E0',E0Cell,'Hhalf0',Hhalf0Cell,'boundary','periodic', ...
+    'storeFields',false,'storeD',false, ...
+    'recordEvery',nStepsCell,'temporalInterfaces',durationsCell(1));
+fdtdCell = fdtd1d_db(cfgCell);
+
+% finalB is staggered at T-dt/2; advance it by half a step in medium 2
+% before comparing it with the integer-time monodromy state.
+EFinalMinus = fdtdCell.finalD/epsCell(2);
+curlEFinal = circshift(EFinalMinus,-1)-EFinalMinus;
+BFinalAtT = fdtdCell.finalB-0.5*(dtCell/dxCell)*curlEFinal;
+DCellAmplitude = sum(fdtdCell.finalD.*exp(-1i*kCell*xCell))/NxCell;
+BCellAmplitude = sum(BFinalAtT.*exp(-1i*kCell*xHCell))/NxCell;
+stateFDTD = [DCellAmplitude;BCellAmplitude];
+stateInitial = [epsCell(1);nCell];
+stateTMM = temporal_crystal_monodromy(kCell,epsCell,[1 1], ...
+    durationsCell)*stateInitial;
+relativeCellStateError = norm(stateFDTD-stateTMM)/norm(stateTMM);
+gainFDTD = norm(stateFDTD)/norm(stateInitial);
+gainTMM = norm(stateTMM)/norm(stateInitial);
+assert(relativeCellStateError < 1e-3, ...
+    'Event-aware FDTD does not match the temporal-cell TMM state.');
+assert(abs(gainFDTD/gainTMM-1) < 1e-3, ...
+    'Event-aware FDTD does not match the temporal-cell TMM gain.');
+assert(isempty(fdtdCell.D), ...
+    'storeD=false should not allocate a D-history matrix.');
+
+% Optional interface-time spectral projection used by the narrow-band
+% Fig. 2 calculation must remove an out-of-support Fourier component from
+% both Maxwell state variables without affecting the selected component.
+NxFilter = 64;
+xFilter = 0:NxFilter-1;
+modeKeep = 3;
+modeReject = 11;
+E0Filter = exp(1i*2*pi*modeKeep*xFilter/NxFilter) + ...
+    0.5*exp(1i*2*pi*modeReject*xFilter/NxFilter);
+filterMask = zeros(1,NxFilter);
+filterMask(modeKeep+1) = 1;
+cfgFilter = struct('x',xFilter,'dt',0.1,'nSteps',2, ...
+    'epsFun',@(xq,tq) ones(size(xq)), ...
+    'muFun',@(xq,tq) ones(size(xq)), ...
+    'E0',E0Filter,'Hhalf0',zeros(1,NxFilter), ...
+    'boundary','periodic','storeFields',false,'storeD',false, ...
+    'recordEvery',2,'temporalInterfaces',0, ...
+    'spectralFilterMask',filterMask);
+fdtdFilter = fdtd1d_db(cfgFilter);
+finalSpectrum = fft(fdtdFilter.finalD);
+spectralLeakage = abs(finalSpectrum(modeReject+1))/ ...
+    abs(finalSpectrum(modeKeep+1));
+assert(spectralLeakage < 1e-12, ...
+    'The interface-time spatial spectral projection failed.');
 
 fprintf('All smoke tests passed.\n');
 fprintf('Maximum sampled-coefficient error: %.3e\n', ...
@@ -127,4 +208,7 @@ fprintf('Temporal domain-wall mismatch: %.3e\n', ...
 fprintf('FHS Chern number: %.12f\n',chern);
 fprintf('Maximum short-run FDTD energy drift: %.3e\n', ...
     relativeEnergyDrift);
+fprintf('FDTD/TMM temporal-cell state error: %.3e\n', ...
+    relativeCellStateError);
+fprintf('Rejected/kept spectral leakage: %.3e\n',spectralLeakage);
 end

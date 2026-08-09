@@ -1,160 +1,116 @@
-# 复现：Topological aspects of photonic time crystals (Lustig et al., 2018)
+# 《Topological aspects of photonic time crystals》复现
 
-本目录包含对论文 **"Topological aspects of photonic time crystals"** (E. Lustig, Y. Sharabi, and M. Segev, *Optica* 5, 1390–1395, 2018, DOI: [10.1364/OPTICA.5.001390](https://doi.org/10.1364/OPTICA.5.001390)) 的 MATLAB 复现代码。
+本目录复现 E. Lustig、Y. Sharabi 与 M. Segev 在 *Optica* 5, 1390–1395 (2018) 发表论文的图 1、2、4、5。代码以正式发表版为准；早期 arXiv 版本中的 Fig. 1(c,d) 对应正式版 Fig. 2(a,b)。
 
-> **注意：** 本复现针对 *Optica* 正式发表版本。原 arXiv preprint (1803.08731v1) 的图号有所不同——详见下方的图号映射表。
+## 已修正的主要问题
 
-## 论文概述
+原实现混用了无量纲时间和论文的 fs 时间，导致图 2 的 120 fs 调制窗口只运行约 19 个而非 60 个周期；同时还使用了错误的背景介电常数、中心动量、脉宽和观测场。当前版本已统一修正：
 
-该论文首次在**光子时间晶体（photonic time-crystal, PTC）**中引入拓扑能带理论。PTC 是一种介电常数在时间上周期性调制、空间上均匀的介质。由于空间平移对称性，动量 k 守恒；由于时间周期性，Floquet 定理适用。
+- `T = 2 fs`，`eps1 = 3`，`eps2 = 1`，自由空间背景 `eps = 1`；
+- 图 2 使用论文的 `lambda = 1.4 um / 0.93 um`、`45 fs` 的 `|D|` 包络 FWHM，以及 `220–340 fs` 的 60 周期 PTC；
+- 数值坐标取 `x = z/c0`，求解器仍使用 `c = 1`，绘图再换回 `z [um]`；
+- FDTD 保存并绘制电位移 `D`，不再把电场 `E` 误标为 `D`；
+- 所有介质跳变严格落在时间网格上，跨界的磁场更新使用界面前后电场平均；
+- 图 2 的解析信号在真实时间界面处投影回物理窄带，防止有源 PTC 把舍入噪声中的高阶 `k` 分量指数放大；
+- 图 1 扩展到论文的 `k/k0 = 0..5`，分段绘制能带，避免跨带隙伪连线；
+- 图 4 包含前六个带隙并连续展开相位，符号恢复为 `+,+,-,-,-,+`；
+- 图 5 传播有限谱宽脉冲，不再把单一域壁本征态的范数误画成脉冲 `|D|`；平滑调制也改为真正连续、周期且时间反演对称的函数。
 
-核心发现：
-- **图1** 展示了二元PTC的介电常数示意图和Floquet能带结构（含Zak相位 0 或 π）
-- **图2** 展示了FDTD模拟的脉冲演化：带内（4个出射脉冲）vs 带隙（指数增长 + 2个出射脉冲）
-- **图4** 展示了前6个动量带隙中前向/后向Floquet模式间的相对相位，验证了拓扑符号律（Eq. 6）
-- **图5** 展示了两个不同拓扑的PTC之间的时间界面态——一种"时间拓扑边缘态"
+## 论文参数与数值约定
 
-## 物理模型
+| 项目 | 数值/约定 |
+|---|---|
+| 二元介电常数 | `eps1 = 3`, `eps2 = 1` |
+| 磁导率 | `mu = 1` |
+| 调制周期 | `T = 2 fs` |
+| 占空比 | `t1 = t2 = T/2` |
+| 时间反演中心 | 两种允许原点均计算；论文图中 Zak 标签对应低介电常数中心 |
+| 论文标签所用对称单胞 | `[epsLow(T/4), epsHigh(T/2), epsLow(T/4)]` |
+| 动量归一化 | `k0 = 2*pi/(T*c)`；数值坐标中 `c=1` |
+| 图 2 色场 | `ln(|D|/max|D(t=0)|)` |
 
-### 参数
-| 参数 | 符号 | 值 |
-|------|------|-----|
-| 介电常数1 | ε₁ | 3 |
-| 介电常数2 | ε₂ | 1 |
-| 调制周期 | T | 2π（Ω=1） |
-| 片段持续时间 | t₁ = t₂ | T/2（等占空比） |
-| 背景介电常数 | ε_bg | 2 |
-| 时间反演对称点 | t=0 | 片段1的中点 |
+图 2 把论文所说的 45 fs 解释为所绘 `|D|` 包络的 FWHM，即初始振幅采用 `exp[-(x/sigma)^2]` 且 `sigma = 45/(2*sqrt(log(2))) fs`。
 
-### 关键方程
+图 1/4 的拓扑规范使用时间反演对称单胞；图 2 的有限晶体则在 `t=220 fs` 从一个完整的 `eps1` 半周期开始。这只是同一体能带单胞的循环移位，却会改变有限脉冲耦合系数；该起始相位可恢复论文色标范围内可见的四个带内出射分支，也使 20 周期 TMM 峰值接近正文的 20,000。
 
-**Floquet色散关系：**
+论文 Fig. 1(a) 的平台标号与正文“`eps1=3, eps2=1` 且 segment 1 以 `t=0` 为中心”的叙述相互矛盾。闭合 Ω-Wilson 环给出：低介电常数中心对应图中标签 `0,0,pi,0,0,pi,0`；将原点平移 `T/2` 到高介电常数中心后，每条带都增加 `pi`。代码独立计算并保存两套结果，不隐藏这一原文规范歧义。
+
+## 文件与输出
+
+| 入口 | 方法 | 主要输出 |
+|---|---|---|
+| `fig1_ptc_bands.m` | 精确 TMM 色散、带边与 Zak 标签 | `output/fig1_ptc_bands.png` |
+| `fig2_fdtd_simulations.m` | 1D D/B-Yee FDTD，带内和带隙脉冲 | `output/fig2_fdtd_simulations.png` |
+| `fig4_relative_phase.m` | 带隙增长 Floquet 模的解析相位 proxy | `output/fig4_relative_phase.png` |
+| `fig5_temporal_edge_state.m` | 有限带宽 `k` 谱的精确 D/B 传播 | `output/fig5_temporal_edge_state.png` |
+| `run_all_reproductions.m` | 依次生成上述四图 | `output/` |
+
+`fig1c_fdtd_in_band.m` 与 `fig1d_fdtd_in_gap.m` 现在只是兼容入口，都会转到唯一的、已校验的图 2 实现，避免旧参数再次生成错误结果。
+
+## 运行
+
+在 MATLAB 中：
+
+```matlab
+cd('D:/spacetime_crystal_code/reproduction/Topology of photonic crystals')
+
+fig1_ptc_bands
+fig2_fdtd_simulations          % 有兼容缓存时直接读取
+fig2_fdtd_simulations(true)    % 强制重跑两组 FDTD
+fig4_relative_phase
+fig5_temporal_edge_state
+
+run_all_reproductions
+run_all_reproductions(true)    % 强制重跑 Fig. 2
 ```
-Ω(k) = (1/T) cos⁻¹(W - X)
+
+不需要 Signal Processing Toolbox。图 2 的缓存包含裁剪后的复数 `D(z,t)`、网格参数、带宽投影和轨迹验收数据。
+
+## 自动验收基准
+
+- 图 1：`0 <= k/k0 <= 5` 内找到 7 个带隙；前七个 Zak 标签为 `0,0,pi,0,0,pi,0`。
+- 图 2：PTC 开始时脉冲中心约为 `65.95 um`；带内 Floquet 群速约为 `±0.9202 c`。在 `t=340 fs`，两支中心约为 `32.85/99.06 um`；带隙脉冲仍位于约 `65.95 um`。在 `t=500 fs`，带隙两支约位于 `17.99/113.92 um`。
+- 图 4：六个带隙相位的中值符号必须为 `+,+,-,-,-,+`，且曲线不得出现 `±pi` 分支切割竖线。
+- 图 5：域壁匹配点 `k/k0 = 0.607301...`；界面峰定标为 60，右侧先降至约 8–13，再恢复至约 55。
+- 通用 smoke test：时间界面修正后的单周期 FDTD/TMM 状态相对误差约 `2.24e-4`；关闭修正时约为 `8.91e-3`。
+
+运行测试：
+
+```matlab
+addpath('D:/spacetime_crystal_code/tests')
+test_smoke
 ```
-其中 |W - X| ≤ 1 时 Ω 为实数（能带），否则为复数（带隙）。
 
-**Zak相位（Eq. 5）：**
+## 必须公开的论文信息缺口
+
+### 1. 图 2 的 60 周期与“约 20,000 倍”不相容
+
+按论文全部文字参数做精确 TMM：
+
+- `lambda = 0.93 um`, 20 周期：相干峰约 `2.16e4`；
+- 同一波长，60 周期：相干峰约 `9.64e12`。
+
+因此正文的 60 周期和“约 20,000 倍”不能同时成立。当前代码忠实保留 `220–340 fs` 的 60 周期，并使用论文图中的自然对数色标 `0..10`（`exp(10)≈2.20e4`），超出部分会被截断；原始复数场与实际最大增益均保存在 MAT 数据中，未通过调参把增益压回 20,000。
+
+### 2. 图 5 没有给出脉冲波长和宽度
+
+论文只为图 2 指定 `0.93 um / 45 fs`，并未为图 5 给出相应参数。直接沿用会使 16T 的幅度增至约 712，明显不符原图。当前实现采用由两个 Floquet 单胞本征矢匹配得到的拓扑界面模：
+
+```text
+k/k0 = 0.607301466...
+lambda = 0.9872937 um
 ```
-θ_m^Zak = ∫_{-π/T}^{π/T} dΩ [ i ∫_0^T dt ε(t) D*_{m,Ω}(t) ∂_Ω D_{m,Ω}(t) ]
-```
-由时间反演对称性（ε(t)=ε(-t)）量子化为0或π。
 
-**拓扑相位符号律（Eq. 6）：**
-```
-sgn(φ_s) = δ (-1)^s (-1)^l exp(i Σ_{m=1}^{s-1} θ_m^Zak)
-```
+有限谱宽（强度 FWHM 约 189 fs）由论文 Fig. 5(b) 的峰包络反演，并明确保存为推断参数，而非声称它由论文给出。
+初始脉冲位于 `eps=3` 片段中，因此使用正向波阻抗关系 `B/D=1/sqrt(3)`；有限谱宽中轻微偏离严格域壁模的分量负责论文所示的后期再增长。
 
-## 图号映射（arXiv v1 → Optica 正式版）
+### 3. 图 4 的逐点相位参考没有完整公开
 
-| arXiv v1 | Optica 正式版 | 描述 |
-|----------|--------------|------|
-| Fig. 1(a) | Fig. 1(a) | PTC介电常数示意图 |
-| Fig. 1(b) | Fig. 1(b) | Floquet能带结构 + Zak相位 |
-| Fig. 1(c) | Fig. 2(a) | FDTD：带内脉冲演化（4个出射脉冲） |
-| Fig. 1(d) | Fig. 2(b) | FDTD：带隙中脉冲演化（2个出射脉冲 + 指数增长） |
-| — | Fig. 3 | 概念示意图（空间光子晶体 vs PTC）— *非计算性* |
-| Fig. 3(a-f) | Fig. 4(a-f) | 前6个带隙的相对相位 |
-| — | Fig. 5(a-c) | 时间拓扑边缘态（两个PTC的界面） |
+论文说明图 4 的相位来自 FDTD 场的傅里叶分量，并由 Eq. (7) 提取，但没有给出探针位置、傅里叶时间门/参考时刻、gap 2--6 的输入谱以及精确的关断相位。这些量会改变逐点相位曲线，因此不能仅凭正文参数唯一重建六条蓝线。
 
-## 文件说明
+当前实现使用 `eps1` 中心对称单胞的带隙增长 Floquet 模，固定在自由空间方向基中计算 `phi=arg(-E_minus/E_plus)`，并只绘制论文窗口与严格带隙的交集。它是明确标注的解析 proxy：可检验的六个相位符号为 `+,+,-,-,-,+`，但不把规范相关的逐点纵坐标伪称为原论文 FDTD 数据。
 
-| 文件 | 内容 | 对应论文图 |
-|------|------|-----------|
-| `fig1_ptc_bands.m` | 二元PTC的ε(t)示意图 + Floquet能带结构 + Zak相位 | **Fig. 1(a,b)** |
-| `fig2_fdtd_simulations.m` | FDTD模拟：带内脉冲 + 带隙脉冲 | **Fig. 2(a,b)** |
-| `fig4_relative_phase.m` | 前6个带隙的相对相位 φ = arg(E⁻/E⁺) + Eq.(6)验证 | **Fig. 4(a-f)** |
-| `fig5_temporal_edge_state.m` | 时间拓扑边缘态：双PTC界面 + 局域化时间峰 | **Fig. 5(a-c)** |
-| `compute_zak_phases.m` | 独立Zak相位计算（Wilson-loop诊断 + Eq.(6)验证） | Fig. 1(b) + Fig. 4 |
-| `run_all_reproductions.m` | 主脚本：依次运行以上所有复现 | 全部 |
+## 参考
 
-### 历史文件（arXiv v1 版本，已保留供参考）
-| 文件 | 原对应图 |
-|------|---------|
-| `fig1a_ptc_schematic.m` | v1 Fig. 1(a) |
-| `fig1b_band_structure.m` | v1 Fig. 1(b) |
-| `fig1c_fdtd_in_band.m` | v1 Fig. 1(c) |
-| `fig1d_fdtd_in_gap.m` | v1 Fig. 1(d) |
-| `fig3_relative_phase.m` | v1 Fig. 3(a-f) |
-
-## 运行方法
-
-### 环境要求
-- MATLAB R2020a 或更高版本
-- Signal Processing Toolbox（仅用于频谱分析，非必需）
-
-### 运行步骤
-
-1. **单个图复现**：
-   ```matlab
-   % 在MATLAB中切换到本目录，然后运行：
-   run('fig1_ptc_bands')            % 快速（能带计算）
-   run('fig2_fdtd_simulations')     % 耗时较长（FDTD，~6-20分钟）
-   run('fig4_relative_phase')       % 中等计算量（TMM + Zak相位）
-   run('fig5_temporal_edge_state')  % 中等（域壁模式分析）
-   ```
-
-2. **全部复现**（推荐）：
-   ```matlab
-   run('run_all_reproductions')
-   ```
-
-3. **输出位置**：所有图片和中间数据保存在 `output/` 子目录中。
-
-### 注意事项
-- **Fig. 2 的 FDTD 模拟较耗时**（每次约 3-10 分钟），请耐心等待。可在脚本中设置 `doFDTD = false` 以加载已保存的数据。
-- **Fig. 5** 默认使用解析域壁模式分析（快速），设置 `doFDTD = true` 可运行完整的 FDTD 模拟（较慢）。
-- 所有脚本会自动添加到父目录的STM工具箱路径（通过`startup_stm.m`）。
-
-## 核心计算方法
-
-### 能带结构计算（Fig. 1b）
-1. 对每个k值，计算monodromy矩阵 U(k)
-2. 对角化 U(k) 得到Floquet特征值 λ(k)
-3. Floquet频率 Ω(k) = cos⁻¹(W-X)/T
-4. 带边条件：|W-X| = 1
-
-### Zak相位计算
-1. 在每个能带区间内，跟踪U(k)的双正交本征态
-2. 计算相邻k点间的本征态重叠（Wilson链）
-3. Zak相位 = -arg(Π_j ⟨v_L(k_j)|v_R(k_{j+1})⟩)，量子化为 0 或 π
-
-### FDTD模拟（Fig. 2）
-1. 使用 D/B-Yee 蛙跳格式（D和B在时间界面上连续）
-2. 介电常数在PTC窗口内按二元周期调制
-3. 初始条件：高斯包络的平面波脉冲
-4. 记录 |D(x,t)| 并可视化
-
-### 相对相位提取（Fig. 4）
-1. **TMM方法**：使用 `temporal_finite_crystal_response` 直接计算有限周期PTC的正向/反向输出振幅比
-2. 绘制每个带隙中 φ(k) = arg(E⁻/E⁺) 的曲线
-3. 验证拓扑符号律 Eq. (6)
-
-### 时间拓扑边缘态（Fig. 5）
-1. **域壁模式分析**：使用 `temporal_domain_wall_mode` 在两个不同拓扑的PTC界面处匹配增长/衰减Floquet本征态
-2. 结果：在界面处产生局域化的时间振幅峰——类似空间拓扑边缘态的时间版本
-3. 可选FDTD验证
-
-## 代码依赖
-
-本复现代码依赖父目录的STM工具箱：
-- `tmm/temporal_crystal_bands.m` — 能带结构
-- `tmm/temporal_crystal_monodromy.m` — monodromy矩阵
-- `tmm/temporal_finite_crystal_response.m` — 有限周期PTC响应
-- `tmm/temporal_domain_wall_mode.m` — 时间域壁模式分析
-- `tmm/temporal_db_to_directional.m` — D/B → 定向分量转换
-- `fdtd/fdtd1d_db.m` — FDTD求解器
-
-## 参考文献
-
-1. E. Lustig, Y. Sharabi, and M. Segev, "Topological aspects of photonic time crystals," *Optica* 5, 1390–1395 (2018). DOI: [10.1364/OPTICA.5.001390](https://doi.org/10.1364/OPTICA.5.001390)
-2. arXiv preprint: [1803.08731v1](https://arxiv.org/abs/1803.08731) (2018) — *注意：图号与正式发表版不同*
-3. F. R. Morgenthaler, "Velocity Modulation of Electromagnetic Waves," IRE Trans. Microwave Theory Tech. 6, 167 (1958).
-4. J. Park and B. Min, "Spatiotemporal plane wave expansion method for arbitrary space-time periodic photonic media," Opt. Lett. 46, 484 (2021).
-
-## 复现状态
-
-- [x] Fig. 1(a,b): PTC示意图 + Floquet能带结构 + Zak相位
-- [x] Fig. 2(a,b): FDTD模拟（带内 + 带隙）
-- [x] Fig. 4(a-f): 前6个带隙的相对相位 + 拓扑验证
-- [x] Fig. 5(a-c): 时间拓扑边缘态
+- E. Lustig, Y. Sharabi, M. Segev, “Topological aspects of photonic time crystals,” *Optica* **5**, 1390–1395 (2018), DOI: 10.1364/OPTICA.5.001390.
+- arXiv:1803.08731（图号与正式版略有不同）。

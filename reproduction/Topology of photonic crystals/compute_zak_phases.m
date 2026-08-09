@@ -1,400 +1,530 @@
-function compute_zak_phases()
-%COMPUTE_ZAK_PHASES  Compute and visualize the Zak phases of all Floquet bands.
+function [zakPhases, info] = compute_zak_phases(varargin)
+%COMPUTE_ZAK_PHASES  Zak phases of the binary photonic time crystal.
 %
-%   This script performs a rigorous, self-contained computation of the
-%   biorthogonal Zak phase for each band of the binary photonic time-crystal
-%   described in Lustig et al., "Topology of photonic time-crystals,"
-%   arXiv:1803.08731v1 (2018).
+%   ZAK = COMPUTE_ZAK_PHASES() evaluates the first seven bands of the PTC
+%   used in Lustig, Sharabi, and Segev, Optica 5, 1390 (2018).  The
+%   calculation implements the closed Floquet-frequency Wilson loop that
+%   discretizes Eq. (5) of the paper,
 %
-%   Key steps:
-%     1. Floquet band structure via temporal_crystal_bands.
-%     2. Contiguous band-interval detection in k-space.
-%     3. Per-band eigenstate tracking using continuity of overlap.
-%     4. Wilson-loop Zak phase from biorthogonal left/right eigenvectors
-%        of the 2×2 monodromy matrix U(k).
-%     5. Verification: sign of relative phase phi in each gap via Eq. (6).
+%       theta_m = int_BZ dOmega i <u_m,Omega | d_Omega u_m,Omega>,
 %
-%   Output:
-%     - Console summary table of all Zak phases.
-%     - Figure with band structure + Zak phase labels.
-%     - Figure with Wilson-loop convergence diagnostics.
-%     - output/compute_zak_phases.png, output/fig_zak_wilson_diagnostics.png
-%     - output/compute_zak_phases.mat (full data).
+%   with <u|v> = int_0^T epsilon(t) u*(t)v(t) dt.  For every Omega, the
+%   conserved momentum k_m(Omega) is found from the exact binary-crystal
+%   dispersion relation.  The displacement field is then reconstructed
+%   throughout the temporal unit cell from its [D;B] Floquet eigenstate.
+%
+%   The Omega grid is half-open.  Its final Wilson link therefore includes
+%   the temporal-Bloch sewing transformation
+%
+%       u_{Omega+2*pi/T}(t) = exp(i*2*pi*t/T) u_Omega(t),
+%
+%   which is essential for a gauge-invariant closed loop.  This differs
+%   from an open product of monodromy eigenvectors along k; the latter is
+%   not the Zak phase in Eq. (5).
+%
+%   The Zak phase depends on the temporal origin.  The labels printed in
+%   the published Fig. 1(b), [0 0 pi 0 0 pi 0], correspond to placing the
+%   time-inversion centre in the epsilon=1 segment.  Moving the origin by
+%   T/2 to the epsilon=3 centre adds pi to every band.  The paper's Fig. 1
+%   and prose use inconsistent epsilon_1/epsilon_2 labels, so this origin
+%   convention is stated explicitly here.
+%
+%   Name-value options:
+%     'InversionCenter' - 'low' (paper labels) or 'high'
+%     'NumberOfBands'   - number of complete bands to evaluate (default 7)
+%     'NOmega'          - points on the half-open temporal BZ (default 61)
+%     'NTime'           - samples in one temporal period (default 301)
+%     'KMax'            - maximum k/k0 used to locate bands (default 5)
+%     'Nk'              - band-search samples (default 20001)
+%     'ComputeBothOrigins' - independently evaluate both inversion centres
+%                            (default true)
+%     'MakePlots'       - create diagnostic plots
+%     'SaveOutput'      - save diagnostics under output/
+%     'Verbose'         - print the numerical audit table
+%
+%   [ZAK,INFO] also returns raw Wilson phases, band edges, link-overlap
+%   diagnostics, and the temporal-origin convention used.
 
-% --- Path setup ---------------------------------------------------------
-rootDir = fileparts(fileparts(fileparts(mfilename('fullpath'))));
-run(fullfile(rootDir, 'startup_stm.m'));
+defaultInteractive = (nargout == 0);
+p = inputParser;
+p.FunctionName = mfilename;
+addParameter(p,'InversionCenter','low', ...
+    @(x)ischar(x) || (isstring(x) && isscalar(x)));
+addParameter(p,'NumberOfBands',7, ...
+    @(x)isnumeric(x) && isscalar(x) && x >= 1 && x == round(x));
+addParameter(p,'NOmega',61, ...
+    @(x)isnumeric(x) && isscalar(x) && x >= 15 && x == round(x));
+addParameter(p,'NTime',301, ...
+    @(x)isnumeric(x) && isscalar(x) && x >= 81 && x == round(x));
+addParameter(p,'KMax',5, ...
+    @(x)isnumeric(x) && isscalar(x) && x > 0);
+addParameter(p,'Nk',20001, ...
+    @(x)isnumeric(x) && isscalar(x) && x >= 1001 && x == round(x));
+addParameter(p,'ComputeBothOrigins',true, ...
+    @(x)islogical(x) || (isnumeric(x) && isscalar(x)));
+addParameter(p,'MakePlots',defaultInteractive, ...
+    @(x)islogical(x) || (isnumeric(x) && isscalar(x)));
+addParameter(p,'SaveOutput',defaultInteractive, ...
+    @(x)islogical(x) || (isnumeric(x) && isscalar(x)));
+addParameter(p,'Verbose',true, ...
+    @(x)islogical(x) || (isnumeric(x) && isscalar(x)));
+parse(p,varargin{:});
+opt = p.Results;
 
-% =========================================================================
-% 1.  Parameters (identical to the paper)
-% =========================================================================
-eps1 = 3;   eps2 = 1;          % permittivities
-mu1  = 1;   mu2  = 1;          % permeabilities
-T    = 2*pi;                   % modulation period  →  Omega = 1
-t1   = 0.5 * T;                % segment durations (equal duty cycle)
-t2   = 0.5 * T;
-epsBg = (eps1 + eps2) / 2;     % background  (impedance-matched average)
-muBg  = 1;
+centreChoice = validatestring(char(opt.InversionCenter),{'low','high'});
 
-fprintf('==========  Zak Phase Computation  ==========\n');
-fprintf('PTC:  eps = [%d, %d],  T = %.4g,  t1 = t2 = T/2\n\n', eps1, eps2, T);
+% Paper parameters.  c=1 is used by the repository TMM convention.  Only
+% k*T is relevant, so T=2 is the paper's physical value in femtoseconds
+% and k0=2*pi/T supplies the plotted dimensionless momentum k/k0.
+epsHigh = 3;
+epsLow = 1;
+T = 2;
+k0 = 2*pi/T;
+reciprocalOmega = 2*pi/T;
 
-% =========================================================================
-% 2.  Band structure on a dense k-mesh
-% =========================================================================
-kMax  = 3.5;
-Nk    = 5000;
-kGrid = linspace(1e-6, kMax, Nk);   % avoid k = 0 exactly
+if strcmp(centreChoice,'low')
+    epsCentre = epsLow;
+    epsOther = epsHigh;
+else
+    epsCentre = epsHigh;
+    epsOther = epsLow;
+end
 
-bands  = temporal_crystal_bands(kGrid, [eps1 eps2], [mu1 mu2], [t1 t2]);
-omegaF = bands.omegaF;              % 2 × Nk   complex Floquet frequencies
-halfTr = bands.halfTrace;           % 1 × Nk   Tr(U)/2
+% The trace is invariant under the half-period origin shift.  Use the
+% vectorized exact binary dispersion to locate complete pass bands.
+kNorm = linspace(0,opt.KMax,opt.Nk);
+kValues = kNorm*k0;
+halfTrace = binary_half_trace(kValues,epsHigh,epsLow,T/2,T/2);
+bandMask = abs(halfTrace) <= 1 + 5e-11;
+gapMask = ~bandMask;
+[bandStarts,bandEnds] = logical_segments(bandMask);
+[gapStarts,gapEnds] = logical_segments(gapMask);
 
-Omega = 2*pi / T;   % = 1
+nBands = min(opt.NumberOfBands,numel(bandStarts));
+if nBands < opt.NumberOfBands
+    error('Only %d bands were found below k/k0=%g; requested %d.', ...
+        nBands,opt.KMax,opt.NumberOfBands);
+end
 
-% =========================================================================
-% 3.  Contiguous band segments (|Tr(U)/2| <= 1)
-% =========================================================================
-inBand = abs(halfTr) <= 1;
-inGap  = ~inBand;
+bandEdges = zeros(nBands,2);
+for bandId = 1:nBands
+    bandEdges(bandId,1) = refine_band_edge( ...
+        bandStarts(bandId),'left',kNorm,halfTrace,k0, ...
+        epsHigh,epsLow,T);
+    bandEdges(bandId,2) = refine_band_edge( ...
+        bandEnds(bandId),'right',kNorm,halfTrace,k0, ...
+        epsHigh,epsLow,T);
+end
 
-dBand = diff([false, inBand, false]);
-bandStarts = find(dBand == 1);       % indices into kGrid
-bandEnds   = find(dBand == -1) - 1;
-nBands = length(bandStarts);
+% Midpoint sampling avoids defective transfer matrices exactly at a band
+% edge while still forming a closed BZ through the sewing link below.
+nOmega = opt.NOmega;
+omegaStep = reciprocalOmega/nOmega;
+omegaGrid = -pi/T + ((0:nOmega-1)+0.5)*omegaStep;
 
-dGap = diff([false, inGap, false]);
-gapStarts = find(dGap == 1);
-gapEnds   = find(dGap == -1) - 1;
-nGaps = length(gapStarts);
+nTime = opt.NTime;
+timeStep = T/nTime;
+timeGrid = (0:nTime-1)*timeStep;
+epsTime = epsOther*ones(size(timeGrid));
+epsTime(timeGrid < T/4 | timeGrid >= 3*T/4) = epsCentre;
+sewingPhase = exp(1i*reciprocalOmega*timeGrid(:));
 
-fprintf('Detected %d bands and %d gaps in k ∈ [0, %.3g]\n\n', nBands, nGaps, kMax);
+zakPhases = zeros(1,nBands);
+rawZakPhases = zeros(1,nBands);
+wilsonLoops = complex(zeros(1,nBands));
+minLinkMagnitude = zeros(1,nBands);
+quantizationError = zeros(1,nBands);
+kOfOmega = zeros(nBands,nOmega);
+allLinks = cell(1,nBands);
 
-% =========================================================================
-% 4.  Per-band biorthogonal Zak phase
-% =========================================================================
-fprintf('--- Band properties ---\n');
-fprintf('%4s  %10s  %10s  %8s  %10s  %8s  %5s\n', ...
-    'Band', 'k_min', 'k_max', 'Nk_raw', 'Zak(rad)', 'Zak(°)', 'Type');
+for bandId = 1:nBands
+    modes = complex(zeros(nTime,nOmega));
+    kLeft = bandEdges(bandId,1);
+    kRight = bandEdges(bandId,2);
 
-zakPhases     = zeros(1, nBands);
-bandMidK      = zeros(1, nBands);
-bandWidths    = zeros(1, nBands);
-wilsonLoops   = complex(zeros(1, nBands));
-allLinks      = cell(1, nBands);     % store Wilson links for diagnostics
+    for omegaId = 1:nOmega
+        omega = omegaGrid(omegaId);
+        targetTrace = cos(omega*T);
+        kNormHere = solve_band_momentum(targetTrace,kLeft,kRight, ...
+            k0,epsHigh,epsLow,T);
+        kHere = kNormHere*k0;
+        kOfOmega(bandId,omegaId) = kNormHere;
 
-for b = 1:nBands
-    ks = bandStarts(b);
-    ke = bandEnds(b);
-    kBand = kGrid(ks:ke);
-    NkRaw = ke - ks + 1;
-    bandMidK(b)   = (kGrid(ks) + kGrid(ke)) / 2;
-    bandWidths(b) = kGrid(ke) - kGrid(ks);
+        U = centred_monodromy(kHere,epsCentre,epsOther,T);
+        [vectors,multipliers] = eig(U,'vector');
+        targetMultiplier = exp(-1i*omega*T);
+        [~,modeId] = min(abs(multipliers-targetMultiplier));
+        stateAtCentre = vectors(:,modeId);
 
-    if NkRaw < 15
-        % Too few points for reliable computation
-        zakPhases(b) = 0;
-        fprintf('%4d  %10.4f  %10.4f  %8d  %10s  %8s  %5s\n', ...
-            b, kGrid(ks), kGrid(ke), NkRaw, '---', '---', 'narrow');
-        continue;
+        displacement = centred_displacement_mode( ...
+            kHere,stateAtCentre,timeGrid,epsCentre,epsOther,T);
+        periodicMode = displacement(:).*exp(1i*omega*timeGrid(:));
+
+        normSquared = timeStep*sum(epsTime(:).*abs(periodicMode).^2);
+        if ~isfinite(normSquared) || normSquared <= 100*eps
+            error('Floquet-mode normalization failed for band %d.',bandId);
+        end
+        modes(:,omegaId) = periodicMode/sqrt(normSquared);
     end
 
-    % ---- 4a.  Subsample to ~120 points for efficiency ------------------
-    sampleStep = max(1, floor(NkRaw / 120));
-    idxSample  = ks:sampleStep:ke;
-    if idxSample(end) ~= ke
-        idxSample = [idxSample, ke];
+    links = complex(zeros(1,nOmega));
+    for omegaId = 1:nOmega-1
+        links(omegaId) = timeStep*sum(epsTime(:).* ...
+            conj(modes(:,omegaId)).*modes(:,omegaId+1));
     end
-    kSample = kGrid(idxSample);
-    Ns = length(kSample);
 
-    % ---- 4b.  Build right & left eigenstates along the band ------------
-    rightStates = complex(zeros(2, Ns));
-    leftStates  = complex(zeros(2, Ns));
-    trackedBranch = 1;   % which eigenvalue branch of U(k) we follow
+    % Close -pi/T -> +pi/T in the same temporal-Bloch basis.
+    sewnFirstMode = sewingPhase.*modes(:,1);
+    links(end) = timeStep*sum(epsTime(:).* ...
+        conj(modes(:,end)).*sewnFirstMode);
 
-    for ik = 1:Ns
-        kVal = kSample(ik);
-        U = temporal_crystal_monodromy(kVal, [eps1 eps2], [mu1 mu2], [t1 t2]);
+    if any(abs(links) < 1e-10)
+        error('A Wilson link is singular in band %d.',bandId);
+    end
+    unitLinks = links./abs(links);
+    wilson = prod(unitLinks);
+    rawZak = mod(-angle(wilson),2*pi);
 
-        % Right eigenvectors
-        [V, D] = eig(U);
-        lamVals = diag(D);
-        omegaVals = 1i * log(lamVals) / T;
-        [~, order] = sort(real(omegaVals));
-        V = V(:, order);
-        lamVals = lamVals(order);
+    % Inversion symmetry quantizes the result.  Quantize only after storing
+    % the raw Wilson phase and its distance from the nearest invariant.
+    if real(wilson) >= 0
+        quantizedZak = 0;
+    else
+        quantizedZak = pi;
+    end
 
-        % Track the correct branch via maximal overlap with previous state
-        if ik == 1
-            trackedBranch = 1;
+    zakPhases(bandId) = quantizedZak;
+    rawZakPhases(bandId) = rawZak;
+    wilsonLoops(bandId) = wilson;
+    minLinkMagnitude(bandId) = min(abs(links));
+    quantizationError(bandId) = abs(angle( ...
+        wilson/exp(-1i*quantizedZak)));
+    allLinks{bandId} = links;
+end
+
+publishedLowCentre = [0 0 pi 0 0 pi 0];
+if strcmp(centreChoice,'low')
+    expectedZak = publishedLowCentre(1:min(nBands,numel(publishedLowCentre)));
+else
+    expectedZak = mod(publishedLowCentre( ...
+        1:min(nBands,numel(publishedLowCentre)))+pi,2*pi);
+end
+matchesExpected = numel(expectedZak) == nBands && ...
+    all(abs(zakPhases-expectedZak) < 1e-12);
+
+% Evaluate the second admissible inversion centre with an independent
+% Wilson loop.  A T/2 shift of the temporal origin changes every single-
+% band Zak phase by pi.  Keeping both results makes the convention issue
+% in the paper directly auditable: the labels drawn in Fig. 1(b) select
+% the low-epsilon centre, whereas a literal reading of segment 1 with
+% epsilon_1=3 selects the high-epsilon centre.
+zakLowCentre = [];
+zakHighCentre = [];
+rawZakLowCentre = [];
+rawZakHighCentre = [];
+otherCentreInfo = struct([]);
+if logical(opt.ComputeBothOrigins)
+    if strcmp(centreChoice,'low')
+        otherCentre = 'high';
+    else
+        otherCentre = 'low';
+    end
+    [otherCentreZak,otherCentreInfo] = compute_zak_phases( ...
+        'InversionCenter',otherCentre, ...
+        'NumberOfBands',opt.NumberOfBands, ...
+        'NOmega',opt.NOmega,'NTime',opt.NTime, ...
+        'KMax',opt.KMax,'Nk',opt.Nk, ...
+        'ComputeBothOrigins',false, ...
+        'MakePlots',false,'SaveOutput',false,'Verbose',false);
+
+    if strcmp(centreChoice,'low')
+        zakLowCentre = zakPhases;
+        rawZakLowCentre = rawZakPhases;
+        zakHighCentre = otherCentreZak;
+        rawZakHighCentre = otherCentreInfo.rawZakPhases;
+    else
+        zakLowCentre = otherCentreZak;
+        rawZakLowCentre = otherCentreInfo.rawZakPhases;
+        zakHighCentre = zakPhases;
+        rawZakHighCentre = rawZakPhases;
+    end
+else
+    if strcmp(centreChoice,'low')
+        zakLowCentre = zakPhases;
+        rawZakLowCentre = rawZakPhases;
+    else
+        zakHighCentre = zakPhases;
+        rawZakHighCentre = rawZakPhases;
+    end
+end
+
+if ~isempty(zakLowCentre) && ~isempty(zakHighCentre)
+    originShiftResidual = angle(exp(1i*( ...
+        zakHighCentre-zakLowCentre-pi)));
+    originShiftCheck = all(abs(originShiftResidual) < 1e-12);
+else
+    originShiftResidual = [];
+    originShiftCheck = [];
+end
+
+if opt.Verbose
+    fprintf('=== Closed Omega-Wilson Zak calculation ===\n');
+    fprintf('Inversion centre: epsilon = %g (%s-permittivity segment)\n', ...
+        epsCentre,centreChoice);
+    fprintf('Band | k/k0 interval          | raw Zak/pi | Zak | min |link|\n');
+    fprintf('-----|------------------------|------------|-----|-----------\n');
+    for bandId = 1:nBands
+        fprintf('%4d | [%8.6f, %8.6f] | %10.6f | %3s | %.6f\n', ...
+            bandId,bandEdges(bandId,1),bandEdges(bandId,2), ...
+            rawZakPhases(bandId)/pi,zak_label(zakPhases(bandId)), ...
+            minLinkMagnitude(bandId));
+    end
+    fprintf('Sequence: [%s]\n',strjoin(arrayfun( ...
+        @zak_label,zakPhases,'UniformOutput',false),', '));
+    if matchesExpected
+        fprintf('PASS: sequence matches the expected %s-centred convention.\n', ...
+            centreChoice);
+    else
+        warning('Computed Zak sequence does not match the expected convention.');
+    end
+    if logical(opt.ComputeBothOrigins)
+        fprintf(['Published Fig. 1 labels (low-epsilon centre):  ', ...
+            '[%s]\n'],strjoin(arrayfun(@zak_label,zakLowCentre, ...
+            'UniformOutput',false),', '));
+        fprintf(['Literal segment-1, epsilon_1=3 centre:          ', ...
+            '[%s]\n'],strjoin(arrayfun(@zak_label,zakHighCentre, ...
+            'UniformOutput',false),', '));
+        if originShiftCheck
+            fprintf('PASS: the two independently computed sequences differ by pi band-by-band.\n');
         else
-            ov1 = abs(rightStates(:, ik-1)' * V(:, 1));
-            ov2 = abs(rightStates(:, ik-1)' * V(:, 2));
-            if ov1 >= ov2
-                trackedBranch = 1;
-            else
-                trackedBranch = 2;
-            end
-        end
-        rightStates(:, ik) = V(:, trackedBranch);
-
-        % Left eigenvector:  w' * U = lambda * w'
-        % i.e. w is the conjugate of the right eigenvector of U.'
-        [Vt, Dt] = eig(U.');
-        [~, idxL] = min(abs(diag(Dt) - lamVals(trackedBranch)));
-        w = conj(Vt(:, idxL));
-        leftStates(:, ik) = w / (norm(w) + eps);
-    end
-
-    % ---- 4c.  Wilson loop (product of biorthogonal unit-modulus links) -
-    links = complex(zeros(1, Ns - 1));
-    minAbsLink = inf;
-    for ik = 1:(Ns - 1)
-        ovlp = leftStates(:, ik)' * rightStates(:, ik + 1);
-        absOvlp = abs(ovlp);
-        if absOvlp < 1e-14
-            links(ik) = 1;        % singular case (should not happen in band)
-        else
-            links(ik) = ovlp / absOvlp;
-        end
-        if absOvlp < minAbsLink
-            minAbsLink = absOvlp;
+            warning('The two origin conventions do not differ by pi band-by-band.');
         end
     end
-    wilsonLoop = prod(links);
-    allLinks{b} = links;
+end
 
-    % ---- 4d.  Zak phase = -arg(Wilson loop), wrapped to [-pi, pi] ------
-    zak = -angle(wilsonLoop);
-    zak = mod(zak + pi, 2*pi) - pi;
-    zakPhases(b)   = zak;
-    wilsonLoops(b) = wilsonLoop;
+info = struct();
+info.method = 'closed Omega Wilson loop with temporal-Bloch sewing';
+info.inversionCenter = centreChoice;
+info.epsCentre = epsCentre;
+info.epsOther = epsOther;
+info.epsHigh = epsHigh;
+info.epsLow = epsLow;
+info.T = T;
+info.k0 = k0;
+info.kNorm = kNorm;
+info.halfTrace = halfTrace;
+info.bandMask = bandMask;
+info.gapMask = gapMask;
+info.bandStarts = bandStarts;
+info.bandEnds = bandEnds;
+info.gapStarts = gapStarts;
+info.gapEnds = gapEnds;
+info.bandEdges = bandEdges;
+info.omegaGrid = omegaGrid;
+info.kOfOmega = kOfOmega;
+info.rawZakPhases = rawZakPhases;
+info.zakPhases = zakPhases;
+info.wilsonLoops = wilsonLoops;
+info.links = allLinks;
+info.minLinkMagnitude = minLinkMagnitude;
+info.quantizationError = quantizationError;
+info.expectedZak = expectedZak;
+info.matchesExpected = matchesExpected;
+info.computeBothOrigins = logical(opt.ComputeBothOrigins);
+info.zakLowCentre = zakLowCentre;
+info.zakHighCentre = zakHighCentre;
+info.rawZakLowCentre = rawZakLowCentre;
+info.rawZakHighCentre = rawZakHighCentre;
+info.publishedLabelZak = zakLowCentre;
+info.literalSegment1Zak = zakHighCentre;
+info.originShiftResidual = originShiftResidual;
+info.originShiftCheck = originShiftCheck;
+if logical(opt.ComputeBothOrigins)
+    info.otherCentreQuantizationError = ...
+        otherCentreInfo.quantizationError;
+    info.otherCentreMinLinkMagnitude = ...
+        otherCentreInfo.minLinkMagnitude;
+else
+    info.otherCentreQuantizationError = [];
+    info.otherCentreMinLinkMagnitude = [];
+end
 
-    % Determine "type":  0 ↔ trivial,  π ↔ topological
-    if abs(zak) < 0.15
-        ztype = '0 (trivial)';
-    elseif abs(abs(zak) - pi) < 0.25
-        ztype = 'pi (topo)';
-    else
-        ztype = sprintf('%.2f', zak);
+fig = [];
+if logical(opt.MakePlots)
+    fig = make_diagnostic_figure(kNorm,halfTrace, ...
+        bandStarts,bandEnds,gapStarts,gapEnds,zakPhases, ...
+        rawZakPhases,T);
+end
+
+if logical(opt.SaveOutput)
+    outputDir = fullfile(fileparts(mfilename('fullpath')),'output');
+    if ~exist(outputDir,'dir'), mkdir(outputDir); end
+    save(fullfile(outputDir,'compute_zak_phases.mat'),'zakPhases','info');
+    if ~isempty(fig)
+        outputFile = fullfile(outputDir,'compute_zak_phases.png');
+        try
+            exportgraphics(fig,outputFile,'Resolution',220);
+        catch
+            print(fig,outputFile,'-dpng','-r220');
+        end
+        if opt.Verbose, fprintf('Saved: %s\n',outputFile); end
     end
-
-    fprintf('%4d  %10.4f  %10.4f  %8d  %+10.4f  %+8.1f  %5s  [max|link|=%.4f]\n', ...
-        b, kGrid(ks), kGrid(ke), NkRaw, zak, zak*180/pi, ztype, minAbsLink);
+end
 end
 
-% =========================================================================
-% 5.  Verify Eq. (6) — topological prediction of gap-phase sign
-% =========================================================================
-fprintf('\n--- Topological verification via Eq. (6) ---\n');
-fprintf('sgn(phi_s) = (-1)^s * (-1)^{s-1} * exp(i * sum_{m=1}^{s-1} theta_m)\n\n');
-
-nPeriods = 19;   % finite-crystal periods
-fprintf('%4s  %12s  %12s  %10s  %6s\n', ...
-    'Gap', 'phi TMM', 'phi pred', 'Zak sum', 'Match');
-
-for g = 1:min(6, nGaps)
-    % TMM reference phase at gap centre
-    ks = gapStarts(g);  ke = gapEnds(g);
-    kGapVals = kGrid(ks:ke);
-    kMid = (kGapVals(1) + kGapVals(end)) / 2;
-
-    % Compute TMM response at a few points around gap centre, interpolate
-    kFine = linspace(kGapVals(1), kGapVals(end), 120);
-    resp = temporal_finite_crystal_response(kFine, ...
-        [eps1 eps2], [mu1 mu2], [t1 t2], nPeriods, epsBg, muBg, [1;0]);
-    [~, imid] = min(abs(kFine - kMid));
-    phiTMM = resp.relativePhase(imid);
-    sgnTMM = sign(phiTMM);
-
-    % Prediction from Eq. (6)
-    l = g - 1;                                    % band crossings below gap
-    if g > 1
-        zakSum = sum(zakPhases(1:(g-1)));
-    else
-        zakSum = 0;
-    end
-    predComplex = (-1)^g * (-1)^l * exp(1i * zakSum);
-    sgnPred = sign(angle(predComplex));
-    if abs(angle(predComplex)) < 0.05, sgnPred = 0; end
-
-    matchStr = '---';
-    if sgnPred ~= 0
-        matchStr = iif(sgnTMM == sgnPred, 'YES ✓', 'NO ✗');
-    end
-
-    fprintf('%4d  %+12.4f  %+12.4f  %+10.2f  %6s\n', ...
-        g, phiTMM, angle(predComplex), zakSum, matchStr);
+function h = binary_half_trace(k,epsA,epsB,durationA,durationB)
+nA = sqrt(epsA);
+nB = sqrt(epsB);
+phaseA = k*durationA/nA;
+phaseB = k*durationB/nB;
+h = cos(phaseA).*cos(phaseB) - 0.5*(nA/nB+nB/nA).* ...
+    sin(phaseA).*sin(phaseB);
 end
 
-% =========================================================================
-% 6.  Figure 1 — Band structure with Zak phase labels
-% =========================================================================
-fig1 = figure('Color','w','Position',[60 60 1100 600]);
-hold on;
-
-% Shade gaps
-for g = 1:nGaps
-    ks = kGrid(gapStarts(g));
-    ke = kGrid(gapEnds(g));
-    fill([ks ke ke ks], [-0.58 -0.58 0.58 0.58], ...
-        [0.88 0.88 0.88], 'EdgeColor','none', 'FaceAlpha', 0.6);
+function [starts,ends] = logical_segments(mask)
+d = diff([false mask false]);
+starts = find(d == 1);
+ends = find(d == -1)-1;
 end
 
-% Bands (real part of omega_F, only in-band points)
-re1 = real(omegaF(1,:));
-re2 = real(omegaF(2,:));
-plot(kGrid(inBand), re1(inBand), 'b-', 'LineWidth', 1.6);
-plot(kGrid(inBand), re2(inBand), 'b-', 'LineWidth', 1.6);
-
-% ---- Annotate each band with its Zak phase ----
-for b = 1:nBands
-    km = bandMidK(b);
-
-    % Which omega_F branch is active at km?
-    [~, ikm] = min(abs(kGrid - km));
-    omegaMid = re1(ikm);
-    % Distinguish the two branches
-    if abs(re2(ikm)) < abs(re1(ikm))
-        omegaMid = re2(ikm);
-    end
-
-    if abs(zakPhases(b)) < 0.15
-        zakLab = '0';
-    elseif abs(abs(zakPhases(b)) - pi) < 0.25
-        zakLab = '\pi';
-    else
-        zakLab = sprintf('%.2f', zakPhases(b));
-    end
-
-    yOff = 0.07;
-    yPos = omegaMid + yOff;
-    if yPos > 0.47, yPos = omegaMid - 0.12; end
-
-    text(km, yPos, sprintf('Zak=%s', zakLab), ...
-        'FontSize', 10, 'FontWeight', 'bold', ...
-        'Color', [0.85 0.15 0.15], ...
-        'HorizontalAlignment', 'center', ...
-        'BackgroundColor', [1 1 0.85]);
+function edge = refine_band_edge(index,side,kNorm,halfTrace,k0, ...
+    epsHigh,epsLow,T)
+switch side
+    case 'left'
+        if index == 1
+            edge = kNorm(1);
+            return;
+        end
+        bracket = [kNorm(index-1) kNorm(index)];
+        targetSign = sign(halfTrace(index-1));
+    case 'right'
+        if index == numel(kNorm)
+            edge = kNorm(end);
+            return;
+        end
+        bracket = [kNorm(index) kNorm(index+1)];
+        targetSign = sign(halfTrace(index+1));
+    otherwise
+        error('Unknown edge side.');
+end
+fun = @(q) binary_half_trace(q*k0,epsHigh,epsLow,T/2,T/2) ...
+    - targetSign;
+edge = fzero(fun,bracket);
 end
 
-yline( 0.5, 'k:', 'LineWidth', 0.6);
-yline(-0.5, 'k:', 'LineWidth', 0.6);
-xlabel('Momentum  k  (a.u.)', 'FontSize', 13);
-ylabel('Floquet frequency  \omega_F / \Omega', 'FontSize', 13);
-title(sprintf('Floquet bands with biorthogonal Zak phases  ' + ...
-    '(\\epsilon_1=%d, \\epsilon_2=%d, T=%.4g)', eps1, eps2, T), ...
-    'FontSize', 14, 'FontWeight', 'bold');
-ylim([-0.58, 0.58]);
-xlim([0, kMax]);
-set(gca, 'FontSize', 12);
-grid on; box on;
-
-% =========================================================================
-% 7.  Figure 2 — Wilson-loop convergence diagnostics
-% =========================================================================
-fig2 = figure('Color','w','Position',[100 100 1300 750]);
-tl = tiledlayout(fig2, 2, 3, 'TileSpacing', 'compact');
-nDiag = min(6, nBands);
-
-for b = 1:nDiag
-    ax = nexttile(tl);
-    if isempty(allLinks{b})
-        title(ax, sprintf('Band %d — too narrow', b));
-        continue;
-    end
-
-    % Phase of each Wilson link (should vary smoothly)
-    linkPhases = angle(allLinks{b});
-
-    % Cumulative Wilson-loop phase
-    cumPhase = -cumsum(linkPhases);   % -sum(arg(link_j)) → Zak phase as k→end
-
-    yyaxis left;
-    plot(ax, 1:length(linkPhases), linkPhases/pi, 'b.-', ...
-        'MarkerSize', 6, 'LineWidth', 1.0);
-    ylabel(ax, 'arg(link_j) / \pi', 'FontSize', 10);
-    ylim(ax, [-1.2, 1.2]);
-    yline(ax, 0, 'k-', 'LineWidth', 0.5);
-
-    yyaxis right;
-    plot(ax, 1:length(cumPhase), cumPhase/pi, 'r-', 'LineWidth', 1.8);
-    ylabel(ax, '-\Sigma arg(link) / \pi', 'FontSize', 10);
-    ylim(ax, [-1.2, 1.2]);
-
-    zakLab = '?';
-    if abs(zakPhases(b)) < 0.15
-        zakLab = '0';
-    elseif abs(abs(zakPhases(b)) - pi) < 0.25
-        zakLab = '\pi';
-    end
-    title(ax, sprintf('Band %d — Zak = %s  (%.2f°)', ...
-        b, zakLab, zakPhases(b)*180/pi), 'FontSize', 11, 'FontWeight', 'bold');
-    xlabel(ax, 'k-index  j', 'FontSize', 9);
-    grid(ax, 'on'); box(ax, 'on');
+function kNorm = solve_band_momentum(targetTrace,kLeft,kRight,k0, ...
+    epsHigh,epsLow,T)
+fun = @(q) binary_half_trace(q*k0,epsHigh,epsLow,T/2,T/2) ...
+    - targetTrace;
+leftValue = fun(kLeft);
+rightValue = fun(kRight);
+rootTolerance = 5e-12;
+if abs(leftValue) < rootTolerance
+    kNorm = kLeft;
+elseif abs(rightValue) < rootTolerance
+    kNorm = kRight;
+elseif leftValue*rightValue > 0
+    error('Band-momentum root is not bracketed in [%g,%g].',kLeft,kRight);
+else
+    kNorm = fzero(fun,[kLeft kRight]);
+end
 end
 
-title(tl, 'Wilson-loop convergence diagnostics (per band)', ...
-    'FontSize', 13, 'FontWeight', 'bold');
-
-% =========================================================================
-% 8.  Save outputs
-% =========================================================================
-outputDir = fullfile(fileparts(mfilename('fullpath')), 'output');
-if ~exist(outputDir, 'dir'), mkdir(outputDir); end
-
-% Figure 1
-f1 = fullfile(outputDir, 'compute_zak_phases.png');
-try
-    exportgraphics(fig1, f1, 'Resolution', 220);
-catch
-    print(fig1, f1, '-dpng', '-r220');
-end
-fprintf('\nSaved: %s\n', f1);
-
-% Figure 2
-f2 = fullfile(outputDir, 'fig_zak_wilson_diagnostics.png');
-try
-    exportgraphics(fig2, f2, 'Resolution', 180);
-catch
-    print(fig2, f2, '-dpng', '-r180');
-end
-fprintf('Saved: %s\n', f2);
-
-% Full data
-dataFile = fullfile(outputDir, 'compute_zak_phases.mat');
-save(dataFile, ...
-    'kGrid', 'omegaF', 'halfTr', 'inBand', 'inGap', ...
-    'bandStarts', 'bandEnds', 'gapStarts', 'gapEnds', ...
-    'zakPhases', 'bandMidK', 'bandWidths', 'wilsonLoops', 'allLinks', ...
-    'eps1', 'eps2', 'T', 't1', 't2', 'epsBg', 'muBg');
-fprintf('Saved: %s\n', dataFile);
-
-% =========================================================================
-% 9.  Final summary table
-% =========================================================================
-fprintf('\n==========  Summary: Zak Phases of PTC Bands  ==========\n');
-fprintf('Band |  k_range         |  Zak (rad)  |  Zak (°)  |  Type\n');
-fprintf('-----|------------------|-------------|-----------|--------\n');
-for b = 1:nBands
-    if abs(zakPhases(b)) < 0.15
-        ztype = '0  (trivial)';
-    elseif abs(abs(zakPhases(b)) - pi) < 0.25
-        ztype = 'pi (topological)';
-    else
-        ztype = sprintf('%.2f', zakPhases(b));
-    end
-    fprintf('  %2d  | [%.4f, %.4f]  |  %+9.4f  |  %+7.1f  |  %s\n', ...
-        b, kGrid(bandStarts(b)), kGrid(bandEnds(b)), ...
-        zakPhases(b), zakPhases(b)*180/pi, ztype);
-end
-fprintf('=========================================================\n');
+function U = centred_monodromy(k,epsCentre,epsOther,T)
+halfCentre = segment_propagator(k,epsCentre,T/4);
+other = segment_propagator(k,epsOther,T/2);
+U = halfCentre*other*halfCentre;
 end
 
-% =========================================================================
-% Helper
-% =========================================================================
-function result = iif(condition, trueVal, falseVal)
-if condition, result = trueVal; else, result = falseVal; end
+function P = segment_propagator(k,epsr,duration)
+n = sqrt(epsr);
+phase = k*duration/n;
+c = cos(phase);
+s = sin(phase);
+P = [c, -1i*n*s; -1i*s/n, c];
+end
+
+function displacement = centred_displacement_mode( ...
+    k,stateAtCentre,timeGrid,epsCentre,epsOther,T)
+displacement = complex(zeros(size(timeGrid)));
+
+mask1 = timeGrid < T/4;
+mask2 = timeGrid >= T/4 & timeGrid < 3*T/4;
+mask3 = timeGrid >= 3*T/4;
+
+[displacement(mask1),~] = advance_state( ...
+    stateAtCentre,k,epsCentre,timeGrid(mask1));
+
+stateQuarter = segment_propagator(k,epsCentre,T/4)*stateAtCentre;
+[displacement(mask2),~] = advance_state( ...
+    stateQuarter,k,epsOther,timeGrid(mask2)-T/4);
+
+stateThreeQuarter = segment_propagator(k,epsOther,T/2)*stateQuarter;
+[displacement(mask3),~] = advance_state( ...
+    stateThreeQuarter,k,epsCentre,timeGrid(mask3)-3*T/4);
+end
+
+function [D,B] = advance_state(state,k,epsr,duration)
+n = sqrt(epsr);
+phase = k*duration/n;
+c = cos(phase);
+s = sin(phase);
+D = c*state(1) - 1i*n*s*state(2);
+B = c*state(2) - 1i*s*state(1)/n;
+end
+
+function label = zak_label(zak)
+if abs(zak) < 0.25*pi
+    label = '0';
+else
+    label = 'pi';
+end
+end
+
+function fig = make_diagnostic_figure(kNorm,halfTrace, ...
+    bandStarts,bandEnds,gapStarts,gapEnds,zakPhases,rawZak,T)
+clamped = min(1,max(-1,halfTrace));
+omegaT = acos(clamped);
+
+fig = figure('Color','w','Position',[80 80 1050 430]);
+tl = tiledlayout(fig,1,2,'TileSpacing','compact','Padding','compact');
+
+ax1 = nexttile(tl);
+hold(ax1,'on');
+for gapId = 1:numel(gapStarts)
+    x1 = kNorm(gapStarts(gapId));
+    x2 = kNorm(gapEnds(gapId));
+    patch(ax1,[x1 x2 x2 x1],[-pi -pi pi pi],[0.86 0.86 0.86], ...
+        'EdgeColor','none');
+end
+for bandId = 1:numel(bandStarts)
+    ids = bandStarts(bandId):bandEnds(bandId);
+    plot(ax1,kNorm(ids), omegaT(ids),'b-','LineWidth',1.4);
+    plot(ax1,kNorm(ids),-omegaT(ids),'b-','LineWidth',1.4);
+end
+for bandId = 1:min(numel(zakPhases),numel(bandStarts))
+    x = 0.5*(kNorm(bandStarts(bandId))+kNorm(bandEnds(bandId)));
+    text(ax1,x,0,zak_label(zakPhases(bandId)), ...
+        'HorizontalAlignment','center','BackgroundColor','w');
+end
+xlabel(ax1,'k/k_0');
+ylabel(ax1,'\Omega T');
+xlim(ax1,[kNorm(1) kNorm(end)]);
+ylim(ax1,[-pi pi]);
+title(ax1,'Closed-\Omega Zak labels');
+box(ax1,'on');
+
+ax2 = nexttile(tl);
+bar(ax2,1:numel(zakPhases),zakPhases/pi,0.55, ...
+    'FaceColor',[0.20 0.45 0.75]);
+hold(ax2,'on');
+plot(ax2,1:numel(rawZak),rawZak/pi,'ro','MarkerFaceColor','r');
+yline(ax2,0,'k:');
+yline(ax2,1,'k:');
+xlabel(ax2,'Band index');
+ylabel(ax2,'Zak phase / \pi');
+ylim(ax2,[-0.1 1.1]);
+legend(ax2,'quantized','raw Wilson phase','Location','best');
+title(ax2,sprintf('Temporal BZ: [-\\pi/T,\\pi/T), T=%g',T));
+box(ax2,'on');
 end

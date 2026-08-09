@@ -75,6 +75,7 @@ cfg.spongeStrength = 0.08;
 cfg.recordEvery = 2;
 cfg.storeFields = true;
 cfg.precision = 'double';
+cfg.temporalInterfaces = tSwitch;
 
 out = fdtd1d_db(cfg);
 
@@ -101,8 +102,10 @@ fprintf('  |rho| (反射系数): %.5f (FDTD 数值)\n', rhoNumeric);
 
 % 解析 Morgenthaler 系数 (用于对照)
 n1 = nBefore; n2 = nAfter;
-tauExact = (n1 + n2) / (2*n2);
-rhoExact = (n1 - n2) / (2*n2);
+% These are E-field coefficients.  D and B continuity gives an additional
+% n1/n2 factor compared with the frequently quoted normalized amplitudes.
+tauExact = n1*(n1 + n2) / (2*n2^2);
+rhoExact = n1*(n1 - n2) / (2*n2^2);
 fprintf('  |tau| (解析):      %.5f\n', abs(tauExact));
 fprintf('  |rho| (解析):      %.5f\n', abs(rhoExact));
 

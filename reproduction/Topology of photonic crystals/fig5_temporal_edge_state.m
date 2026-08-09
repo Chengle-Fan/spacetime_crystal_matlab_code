@@ -1,406 +1,190 @@
 function fig5_temporal_edge_state()
-%FIG5_TEMPORAL_EDGE_STATE  Reproduce Fig. 5 of Lustig et al., Optica 5, 1390 (2018).
+%FIG5_TEMPORAL_EDGE_STATE Reproduce Fig. 5 of Lustig et al. (2018).
 %
-%   Three-panel figure showing temporal topological edge states:
-%     (a) Schematic of two cascaded PTCs with different Zak phases
-%         (PTC1: eps=[3,1], PTC2: eps=[1,3]), interface at t = 8T.
-%     (b) Temporal domain wall mode — field amplitude as a function
-%         of time, showing exponential growth toward the interface
-%         in PTC1, exponential decay away from it in PTC2, creating
-%         a localized temporal peak at the topological boundary.
-%     (c) Schematic of smooth (non-step-like) time modulation
-%         preserving the topological features.
-%
-%   Panel (b) can use either:
-%     - Analytical domain-wall matching (fast, default)
-%     - Full FDTD simulation (set doFDTD=true, slow)
-%
-%   Reference:
-%     E. Lustig, Y. Sharabi, and M. Segev,
-%     "Topological aspects of photonic time crystals,"
-%     Optica 5, 1390-1395 (2018).  DOI: 10.1364/OPTICA.5.001390
+% A narrow finite-bandwidth pulse is propagated in k space with the exact
+% D/B propagator.  Keeping the full spectrum is essential: an exactly
+% matched single-k domain-wall eigenstate decays forever to the right and
+% cannot reproduce the re-growth shown in the paper.  The paper does not
+% state this panel's pulse width, so the value is explicitly inferred below.
 
-% --- Add parent toolbox to path ---
 rootDir = fileparts(fileparts(fileparts(mfilename('fullpath'))));
-run(fullfile(rootDir, 'startup_stm.m'));
+run(fullfile(rootDir,'startup_stm.m'));
 
-% =========================================================================
-% Configuration
-% =========================================================================
-doFDTD = false;   % set true for FDTD simulation of panel (b) (slow)
-outputDir = fullfile(fileparts(mfilename('fullpath')), 'output');
-if ~exist(outputDir, 'dir'), mkdir(outputDir); end
+epsA = 3;
+epsB = 1;
+T = 2;                              % fs
+c0 = 0.299792458;                   % um/fs
+k0 = 2*pi/T;                        % c=1 numerical coordinate
+nLeft = 8;
+nRight = 8;
+interfacePeriod = nLeft;
 
-% =========================================================================
-% PTC parameters
-% =========================================================================
-epsA = 3;   epsB = 1;
-T    = 2*pi;
-durations = [0.5, 0.5] * T;  % equal segments
-nPeriodsLeft  = 8;   % PTC1 periods before interface
-nPeriodsRight = 8;   % PTC2 periods after interface
+% Time-inversion-symmetric cells: segment 1 is centred at the cell origin.
+epsLeft = [epsA epsB epsA];
+epsRight = [epsB epsA epsB];
+muCell = [1 1 1];
+durations = [T/4 T/2 T/4];
 
-% PTC1: eps = [epsA, epsB] = [3, 1]
-% PTC2: eps = [epsB, epsA] = [1, 3]  (swapped → different topology)
-epsLeft  = [epsA, epsB];
-epsRight = [epsB, epsA];
-mu       = [1, 1];
+% Diagnose the ideal (single-k) domain-wall state, but do not use its norm
+% as the pulse observable.
+kNormProbe = linspace(0.53,0.73,1600);
+mode = temporal_domain_wall_mode(kNormProbe*k0, ...
+    epsLeft,muCell,durations,epsRight,muCell,durations,nLeft,nRight);
 
-% =========================================================================
-% Part 1: Find temporal domain wall mode (analytical)
-% =========================================================================
-fprintf('=== Temporal domain wall mode analysis ===\n');
-fprintf('PTC1 (left):  eps = [%d, %d]  for %d periods\n', epsLeft, nPeriodsLeft);
-fprintf('PTC2 (right): eps = [%d, %d]  for %d periods\n', epsRight, nPeriodsRight);
-fprintf('Interface at t = %dT = %.4g\n', nPeriodsLeft, nPeriodsLeft*T);
+% Fig. 5 does not state a pulse wavelength or width (the 0.93 um / 45 fs
+% values belong only to Fig. 2).  The physically distinguished centre is
+% therefore the domain-wall matching mode found above.  The width below is
+% inferred from the published finite-bandwidth envelope: after scaling the
+% interface peak to 60, the last-period peak is approximately 55.
+kCentre = mode.k;
+kCentreNorm = kCentre/k0;
+lambdaCentre = 2*pi*c0/kCentre;     % 0.987294 um
+fwhmIntensity = 189;                % fs, inferred from published panel (b)
+sigmaX = fwhmIntensity/sqrt(2*log(2));
 
-% Scan k to find the common momentum gap and domain wall mode
-kNormRange = [0.30, 0.80];  % k/(2*pi/T) range for gap search
-kNorms = linspace(kNormRange(1), kNormRange(2), 2000);
-kValues = kNorms * 2*pi/T;
+% Uniform baseband grid for FFT reconstruction of max_z |D(z,t)|.
+nK = 2048;
+qMax = 0.8;
+dq = 2*qMax/nK;
+q = (-nK/2:nK/2-1)*dq;
+kSpectrum = kCentre+q;
+spectralAmplitude = exp(-((q*sigmaX/2).^2));
 
-mode = temporal_domain_wall_mode(kValues, ...
-    epsLeft, mu, durations, ...
-    epsRight, mu, durations, nPeriodsLeft, nPeriodsRight);
+stepsPerPeriod = 200;               % all quarter-cell interfaces align
+[timeFs,peakAmplitude] = wavepacket_peak_history( ...
+    kSpectrum,spectralAmplitude,T,stepsPerPeriod, ...
+    nLeft,nRight,epsA,epsB);
+timePeriods = timeFs/T;
 
-kBest = mode.k;
-kBestNorm = kBest / (2*pi/T);
-fprintf('\nDomain wall mode found:\n');
-fprintf('  k = %.6f (k_norm = %.4f)\n', kBest, kBestNorm);
-fprintf('  Left  multiplier  |lambda_grow| = %.4f\n', abs(mode.leftMultiplier));
-fprintf('  Right multiplier  |lambda_decay| = %.4f\n', abs(mode.rightMultiplier));
-fprintf('  Eigenspace mismatch = %.3e\n', mode.bestMismatch);
-
-% =========================================================================
-% Part 2: FDTD simulation (optional, for panel b)
-% =========================================================================
-fdtDataFile = fullfile(outputDir, 'fig5_fdtd_data.mat');
-
-if doFDTD
-    fprintf('\n=== FDTD simulation of temporal edge state ===\n');
-
-    % FDTD grid parameters
-    lambda0 = 2*pi / kBest;
-    dx = lambda0 / 30;
-    xDomain = 120;
-    x = 0:dx:xDomain;
-    dt = 0.8 * dx;
-    fprintf('Grid: Nx=%d, dx=%.4f, dt=%.4f\n', numel(x), dx, dt);
-
-    % Plane-wave-like initial condition (narrowband around kBest)
-    x0 = xDomain * 0.25;
-    sigma = 12.0;  % wide spatial envelope → narrow k-space
-    pulseFn = @(xq) exp(-((xq-x0)/sigma).^2) .* exp(1i*kBest*(xq-x0));
-    E0 = pulseFn(x);
-
-    nBg = sqrt((epsA + epsB)/2);
-    xH = x(1:end-1) + dx/2;
-    vBg = 1/nBg;
-    H0 = nBg * pulseFn(xH + vBg*dt/2);
-
-    % Temporal schedule: free space → PTC1 → PTC2 → free space
-    tFree1 = 120;                          % free propagation before PTC1
-    tPTC1_start = tFree1;
-    tPTC1_end   = tPTC1_start + nPeriodsLeft * T;   % interface at t = 8T
-    tPTC2_end   = tPTC1_end + nPeriodsRight * T;
-    tSim        = tPTC2_end + 80;
-    nSteps      = ceil(tSim / dt);
-
-    fprintf('Schedule: free [0,%.1f] → PTC1 [%.1f,%.1f] → PTC2 [%.1f,%.1f] → free\n', ...
-        tFree1, tPTC1_start, tPTC1_end, tPTC1_end, tPTC2_end);
-    fprintf('Total steps: %d, t_max: %.1f\n', nSteps, nSteps*dt);
-
-    cfg = struct('x', x, 'dt', dt, 'nSteps', nSteps, ...
-        'epsFun', @(xq,tq) ptcDomainWallEps(xq, tq, epsA, epsB, ...
-            tPTC1_start, tPTC1_end, tPTC2_end, durations), ...
-        'muFun', @(xq,tq) ones(size(xq)), ...
-        'E0', E0, 'Hhalf0', H0, ...
-        'boundary', 'sponge', 'spongeCells', 120, 'spongeStrength', 0.08, ...
-        'recordEvery', 3, 'storeFields', true, 'progressBar', true);
-
-    fprintf('Running FDTD...\n');
-    out_fdtd = fdtd1d_db(cfg);
-
-    save(fdtDataFile, 'out_fdtd', 'kBest', 'kBestNorm', ...
-        'tPTC1_start', 'tPTC1_end', 'tPTC2_end', ...
-        'nPeriodsLeft', 'nPeriodsRight', 'epsA', 'epsB', 'T', 'durations');
-    fprintf('Saved FDTD data.\n');
-else
-    fprintf('\n=== Skipping FDTD (set doFDTD=true to run) ===\n');
-    fprintf('Using analytical domain wall mode for panel (b).\n');
+% Compare the carrier-resolved curve through a one-period local-peak
+% envelope; sampling only at integer T can accidentally hit a carrier dip.
+cycleTimes = 0:(nLeft+nRight);
+cycleEnvelope = zeros(size(cycleTimes));
+for j = 1:numel(cycleTimes)
+    window = abs(timePeriods-cycleTimes(j)) <= 0.5;
+    cycleEnvelope(j) = max(peakAmplitude(window));
+end
+idInterfaceCycle = interfacePeriod+1;
+amplitudeScale = 60/cycleEnvelope(idInterfaceCycle);
+peakAmplitude = amplitudeScale*peakAmplitude;
+cycleEnvelope = amplitudeScale*cycleEnvelope;
+interfacePeak = cycleEnvelope(idInterfaceCycle);
+rightMinimum = min(cycleEnvelope(idInterfaceCycle:end));
+finalAmplitude = cycleEnvelope(end);
+fprintf(['Fig. 5 wavepacket: k_c/k0=%.6f, ideal edge k/k0=%.6f, ' ...
+    'cycle peak at 8T=%.3f, right minimum=%.3f, final=%.3f.\n'], ...
+    kCentreNorm,mode.k/k0,interfacePeak,rightMinimum,finalAmplitude);
+if abs(interfacePeak-60) > 1e-10 || rightMinimum >= 0.35*interfacePeak || ...
+        finalAmplitude < 0.75*interfacePeak || ...
+        finalAmplitude > 1.05*interfacePeak
+    error('The reconstructed pulse does not match the published edge envelope.');
 end
 
-% =========================================================================
-% Create Figure 5
-% =========================================================================
-fig = figure('Color', 'w', 'Position', [30 30 1400 500]);
-tl = tiledlayout(fig, 1, 3, 'TileSpacing', 'compact', 'Padding', 'compact');
+fig = figure('Color','w','Position',[40 40 920 560]);
+tl = tiledlayout(fig,3,1,'TileSpacing','compact','Padding','compact');
 
-% --- Panel (a): Two cascaded PTCs schematic -------------------------------
+% ---------------------------------------------------------------------
+% (a) Two topologically distinct, cascaded centred cells.
+% ---------------------------------------------------------------------
 axA = nexttile(tl);
+uStep = linspace(0,nLeft+nRight,6401);
+epsStep = domain_wall_epsilon(uStep,nLeft,epsA,epsB);
+stairs(axA,uStep,epsStep,'Color',[0 0.4470 0.7410],'LineWidth',1.4);
+xline(axA,interfacePeriod,':','Color',[0.35 0.35 0.35]);
+text(axA,interfacePeriod+0.15,2.65,'interface','FontSize',8);
+xlim(axA,[0 nLeft+nRight]);
+ylim(axA,[0.75 3.25]);
+yticks(axA,[epsB epsA]);
+ylabel(axA,'\epsilon');
+title(axA,'(a)','FontWeight','normal');
+box(axA,'on');
+set(axA,'FontSize',9);
 
-% Build epsilon profile
-nShowLeft = nPeriodsLeft;
-nShowRight = min(nPeriodsRight, 8);
-tLeft  = linspace(0, nShowLeft*T, nShowLeft*200);
-tRight = linspace(nShowLeft*T, (nShowLeft + nShowRight)*T, nShowRight*200);
-tAll = [tLeft, tRight];
-epsAll = zeros(size(tAll));
-
-% PTC1: eps=[epsA, epsB] for t < nPeriodsLeft*T
-for i = 1:length(tLeft)
-    tMod = mod(tLeft(i), T);
-    if tMod < durations(1)
-        epsAll(i) = epsA;
-    else
-        epsAll(i) = epsB;
-    end
-end
-
-% PTC2: eps=[epsB, epsA] for t >= nPeriodsLeft*T
-offset = length(tLeft);
-for i = 1:length(tRight)
-    tMod = mod(tRight(i) - nShowLeft*T, T);
-    if tMod < durations(1)
-        epsAll(offset + i) = epsB;  % swapped!
-    else
-        epsAll(offset + i) = epsA;
-    end
-end
-
-% Fill the PTC regions
-fill(axA, [tLeft, nShowLeft*T, 0], [epsAll(1:length(tLeft)), 0, epsAll(1)], ...
-    [0.7 0.85 1.0], 'EdgeColor', 'none', 'FaceAlpha', 0.35);
-hold(axA, 'on');
-fill(axA, [nShowLeft*T, tRight, (nShowLeft+nShowRight)*T, nShowLeft*T], ...
-    [epsAll(offset+1), epsAll(offset+1:end), 0, 0], ...
-    [1.0 0.8 0.7], 'EdgeColor', 'none', 'FaceAlpha', 0.35);
-
-stairs(axA, tAll, epsAll, 'b-', 'LineWidth', 1.6);
-
-% Interface marker
-xline(axA, nShowLeft*T, 'r-', 'LineWidth', 2.2);
-text(axA, nShowLeft*T + 0.5, epsA + 0.3, ...
-    sprintf('Interface\n(t = %dT)', nPeriodsLeft), ...
-    'Color', 'r', 'FontSize', 10, 'FontWeight', 'bold', ...
-    'VerticalAlignment', 'top');
-
-% Labels
-text(axA, nShowLeft*T/2, epsA + 0.6, ...
-    sprintf('PTC 1\n\\epsilon=[%d,%d]', epsA, epsB), ...
-    'FontSize', 10, 'HorizontalAlignment', 'center', ...
-    'FontWeight', 'bold', 'Color', [0.1 0.3 0.6]);
-text(axA, nShowLeft*T + nShowRight*T/2, epsA + 0.6, ...
-    sprintf('PTC 2\n\\epsilon=[%d,%d]', epsB, epsA), ...
-    'FontSize', 10, 'HorizontalAlignment', 'center', ...
-    'FontWeight', 'bold', 'Color', [0.7 0.2 0.1]);
-
-ylim(axA, [0, epsA + 1.2]);
-xlabel(axA, 'Time  t', 'FontSize', 12);
-ylabel(axA, 'Permittivity  \epsilon(t)', 'FontSize', 12);
-title(axA, '(a)  Two cascaded PTCs', 'FontSize', 13, 'FontWeight', 'bold');
-set(axA, 'FontSize', 10);
-box(axA, 'on');
-
-% --- Panel (b): Temporal edge state --------------------------------------
+% ---------------------------------------------------------------------
+% (b) Actual pulse peak, not ||[D,B]|| of a pure eigenstate.
+% ---------------------------------------------------------------------
 axB = nexttile(tl);
-hold(axB, 'on');
+plot(axB,timePeriods,peakAmplitude,'Color',[0 0.4470 0.7410], ...
+    'LineWidth',1.5);
+xline(axB,interfacePeriod,':','Color',[0.35 0.35 0.35]);
+xlim(axB,[0 nLeft+nRight]);
+ylim(axB,[0 1.06*max(peakAmplitude)]);
+ylabel(axB,'|D|');
+xlabel(axB,'Modulation Periods');
+title(axB,'(b)','FontWeight','normal');
+box(axB,'on');
+set(axB,'FontSize',9);
 
-if doFDTD && exist(fdtDataFile, 'file')
-    % FDTD-based: field amplitude at a fixed x
-    load(fdtDataFile, 'out_fdtd', 'tPTC1_start', 'tPTC1_end', 'tPTC2_end');
-
-    [~, probeIdx] = min(abs(out_fdtd.x - out_fdtd.x(round(end*0.3))));
-    Damp = abs(out_fdtd.E(:, probeIdx));
-
-    semilogy(axB, out_fdtd.t, Damp, 'b-', 'LineWidth', 1.3);
-    xline(axB, tPTC1_start, 'k--', 'LineWidth', 1);
-    xline(axB, tPTC1_end, 'r-', 'LineWidth', 2);
-    xline(axB, tPTC2_end, 'k--', 'LineWidth', 1);
-
-    legend(axB, '|D(t)|', 'PTC start', 'Interface', 'PTC end', ...
-        'Location', 'best', 'FontSize', 8);
-    title(axB, '(b)  FDTD: temporal edge state', ...
-        'FontSize', 13, 'FontWeight', 'bold');
-else
-    % Analytical: plot the domain wall mode envelope
-    cellIndex = mode.cellIndex;
-    stateNorm = mode.stateNorm;
-
-    % Plot the state norm (envelope) across temporal cells
-    % Cell index 0 = interface
-    semilogy(axB, cellIndex, stateNorm, 'o-', ...
-        'Color', [0.12 0.42 0.78], 'LineWidth', 2.2, ...
-        'MarkerFaceColor', [0.12 0.42 0.78], 'MarkerSize', 8);
-
-    % Interface marker
-    xline(axB, 0, 'r-', 'LineWidth', 2.2);
-
-    % Exponential fit guides for visual reference
-    leftIdx = cellIndex <= 0;
-    rightIdx = cellIndex >= 0;
-    if any(leftIdx) && any(rightIdx)
-        % Fit exponential growth on the left
-        leftVals = log(stateNorm(leftIdx));
-        leftVals = leftVals(isfinite(leftVals));
-        % Fit exponential decay on the right (first few cells before re-growth)
-        rightFitIdx = rightIdx & cellIndex <= 4;
-        if sum(rightFitIdx) >= 2
-            rightVals = log(stateNorm(rightFitIdx));
-            rightVals = rightVals(isfinite(rightVals));
-        end
-    end
-
-    % Annotate
-    text(axB, -nPeriodsLeft/2, stateNorm(1)*1.5, ...
-        {'Exponential'; 'growth (PTC1)'}, ...
-        'FontSize', 9, 'HorizontalAlignment', 'center', ...
-        'Color', [0.1 0.3 0.6]);
-    text(axB, nPeriodsRight/2, stateNorm(end)*0.7, ...
-        {'Re-growth'; '(PTC2)'}, ...
-        'FontSize', 9, 'HorizontalAlignment', 'center', ...
-        'Color', [0.7 0.2 0.1]);
-    text(axB, 0.5, stateNorm(mode.interfaceId)*1.3, ...
-        'Peak at\ninterface', ...
-        'FontSize', 9, 'Color', 'r', 'FontWeight', 'bold');
-
-    legend(axB, '||[D,B]|| / interface', 'Interface (t=8T)', ...
-        'Location', 'best', 'FontSize', 9);
-    title(axB, sprintf('(b)  Domain-wall mode  (k=%.4f)', kBestNorm), ...
-        'FontSize', 13, 'FontWeight', 'bold');
-end
-
-xlabel(axB, 'Temporal cell index  (0 = interface)', 'FontSize', 11);
-ylabel(axB, 'Normalized field amplitude  (log scale)', 'FontSize', 11);
-set(axB, 'FontSize', 10);
-grid(axB, 'on'); box(axB, 'on');
-
-% --- Panel (c): Smooth modulation schematic -------------------------------
+% ---------------------------------------------------------------------
+% (c) Periodic, inversion-symmetric smooth modulation.  tanh(cos) is
+% continuous at both the half-period and period boundaries.
+% ---------------------------------------------------------------------
 axC = nexttile(tl);
+uSmooth = linspace(0,9,2401);
+beta = 2.4;
+epsSmooth = 0.5*(epsA+epsB) + 0.5*(epsA-epsB)* ...
+    tanh(beta*cos(2*pi*uSmooth))/tanh(beta);
+plot(axC,uSmooth,epsSmooth,'Color',[0 0.4470 0.7410],'LineWidth',1.5);
+xlim(axC,[0 9]);
+ylim(axC,[0.75 3.25]);
+yticks(axC,[epsB epsA]);
+xlabel(axC,'Modulation Periods');
+ylabel(axC,'\epsilon');
+title(axC,'(c)','FontWeight','normal');
+box(axC,'on');
+set(axC,'FontSize',9);
 
-% Build a smoothed version using raised-cosine transitions
-nShowSmooth = 6;
-tSmooth = linspace(0, nShowSmooth*T, nShowSmooth*300);
-epsSmooth = zeros(size(tSmooth));
-
-% Smooth transition parameter (fraction of T/2)
-smoothFrac = 0.15;
-
-for i = 1:length(tSmooth)
-    tMod = mod(tSmooth(i), T);
-    halfT = T/2;
-
-    if tMod < halfT
-        % Segment 1 (eps=epsA) with smooth transitions at boundaries
-        if tMod < smoothFrac*halfT
-            % Rising edge from epsB to epsA
-            frac = tMod / (smoothFrac*halfT);
-            epsSmooth(i) = epsB + (epsA - epsB) * (sin(frac*pi - pi/2) + 1) / 2;
-        elseif tMod > halfT - smoothFrac*halfT
-            % Falling edge from epsA to epsB
-            frac = (tMod - (halfT - smoothFrac*halfT)) / (smoothFrac*halfT);
-            epsSmooth(i) = epsA + (epsB - epsA) * (sin(frac*pi - pi/2) + 1) / 2;
-        else
-            epsSmooth(i) = epsA;
-        end
-    else
-        % Segment 2 (eps=epsB) with smooth transitions
-        tMod2 = tMod - halfT;
-        if tMod2 < smoothFrac*halfT
-            frac = tMod2 / (smoothFrac*halfT);
-            epsSmooth(i) = epsA + (epsB - epsA) * (sin(frac*pi - pi/2) + 1) / 2;
-        elseif tMod2 > halfT - smoothFrac*halfT
-            frac = (tMod2 - (halfT - smoothFrac*halfT)) / (smoothFrac*halfT);
-            epsSmooth(i) = epsB + (epsA - epsB) * (sin(frac*pi - pi/2) + 1) / 2;
-        else
-            epsSmooth(i) = epsB;
-        end
-    end
+outputDir = fullfile(fileparts(mfilename('fullpath')),'output');
+if ~exist(outputDir,'dir'), mkdir(outputDir); end
+outputFile = fullfile(outputDir,'fig5_temporal_edge_state.png');
+exportgraphics(fig,outputFile,'Resolution',250);
+save(fullfile(outputDir,'fig5_data.mat'), ...
+    'timeFs','timePeriods','peakAmplitude','interfacePeak','rightMinimum', ...
+    'finalAmplitude','cycleTimes','cycleEnvelope','amplitudeScale', ...
+    'uStep','epsStep','uSmooth','epsSmooth','mode', ...
+    'kCentre','kCentreNorm','kSpectrum','spectralAmplitude', ...
+    'lambdaCentre','fwhmIntensity','sigmaX','epsA','epsB','T', ...
+    'epsLeft','epsRight','durations','nLeft','nRight');
+fprintf('Saved: %s\n',outputFile);
 end
 
-% Step-like reference (faint)
-tStep = linspace(0, nShowSmooth*T, nShowSmooth*50);
-epsStep = zeros(size(tStep));
-for i = 1:length(tStep)
-    tMod = mod(tStep(i), T);
-    if tMod < durations(1)
-        epsStep(i) = epsA;
-    else
-        epsStep(i) = epsB;
-    end
+function [timeFs,peakAmplitude] = wavepacket_peak_history( ...
+    kSpectrum,spectrum,T,stepsPerPeriod,nLeft,nRight,epsA,epsB)
+dt = T/stepsPerPeriod;
+nSteps = (nLeft+nRight)*stepsPerPeriod;
+timeFs = (0:nSteps)*dt;
+
+D = complex(spectrum);
+% At t=0 the left crystal is in epsA.  For its forward plane-wave
+% components, D=epsA*E and B=H=sqrt(epsA)*E, hence B/D=1/sqrt(epsA).
+B = complex(spectrum)/sqrt(epsA);
+normalization = max(abs(ifft(ifftshift(D))));
+peakAmplitude = zeros(size(timeFs));
+peakAmplitude(1) = 1;
+
+for step = 1:nSteps
+    tMid = (step-0.5)*dt;
+    uMid = tMid/T;
+    epsNow = domain_wall_epsilon(uMid,nLeft,epsA,epsB);
+    rootEps = sqrt(epsNow);
+    phase = kSpectrum*dt/rootEps;
+    c = cos(phase);
+    s = sin(phase);
+    Dold = D;
+    Bold = B;
+    D = c.*Dold-1i*rootEps*s.*Bold;
+    B = -1i*s/rootEps.*Dold+c.*Bold;
+    peakAmplitude(step+1) = ...
+        max(abs(ifft(ifftshift(D))))/normalization;
 end
-plot(axC, tStep, epsStep, '--', 'Color', [0.7 0.7 0.7], 'LineWidth', 1);
-hold(axC, 'on');
-
-% Smooth profile
-fill(axC, [tSmooth, tSmooth(end), tSmooth(1)], ...
-    [epsSmooth, epsA, epsA], ...
-    [0.7 0.85 1.0], 'EdgeColor', 'none', 'FaceAlpha', 0.35);
-plot(axC, tSmooth, epsSmooth, 'b-', 'LineWidth', 2.2);
-
-ylim(axC, [epsB-0.2, epsA+0.5]);
-xlabel(axC, 'Time  t', 'FontSize', 12);
-ylabel(axC, 'Permittivity  \epsilon(t)', 'FontSize', 12);
-title(axC, '(c)  Smooth time modulation', 'FontSize', 13, 'FontWeight', 'bold');
-
-% Annotate
-text(axC, T/4, epsA+0.2, sprintf('\\epsilon_1=%d', epsA), ...
-    'FontSize', 10, 'HorizontalAlignment', 'center');
-text(axC, 3*T/4, epsB-0.1, sprintf('\\epsilon_2=%d', epsB), ...
-    'FontSize', 10, 'HorizontalAlignment', 'center');
-legend(axC, 'Step-like (ref.)', 'Smooth \epsilon(t)', ...
-    'Location', 'best', 'FontSize', 9);
-set(axC, 'FontSize', 10);
-grid(axC, 'on'); box(axC, 'on');
-
-% Overall title
-title(tl, sprintf(['Fig. 5: Temporal topological edge states ' ...
-    '(\\epsilon_1=%d, \\epsilon_2=%d, interface at t=%dT)'], ...
-    epsA, epsB, nPeriodsLeft), 'FontSize', 13, 'FontWeight', 'bold');
-
-% =========================================================================
-% Save
-% =========================================================================
-outputFile = fullfile(outputDir, 'fig5_temporal_edge_state.png');
-try
-    exportgraphics(fig, outputFile, 'Resolution', 200);
-catch
-    print(fig, outputFile, '-dpng', '-r200');
-end
-fprintf('\nSaved: %s\n', outputFile);
-
-save(fullfile(outputDir, 'fig5_data.mat'), ...
-    'mode', 'epsA', 'epsB', 'T', 'durations', ...
-    'nPeriodsLeft', 'nPeriodsRight', 'kBest', 'kBestNorm', ...
-    'epsLeft', 'epsRight', 'mu');
-fprintf('Saved data to fig5_data.mat\n');
 end
 
-% =========================================================================
-% Permittivity for domain-wall FDTD
-% =========================================================================
-function epsVal = ptcDomainWallEps(x, t, epsA, epsB, tPTC1s, tPTC1e, tPTC2e, durations)
-T = sum(durations);
-if t < tPTC1s || t > tPTC2e
-    % Free space (background)
-    epsVal = (epsA + epsB)/2 * ones(size(x));
-elseif t < tPTC1e
-    % PTC1: eps = [epsA, epsB]
-    tLocal = t - tPTC1s;
-    tPhase = mod(tLocal, T);
-    if tPhase < durations(1)
-        epsVal = epsA * ones(size(x));
-    else
-        epsVal = epsB * ones(size(x));
-    end
-else
-    % PTC2: eps = [epsB, epsA] (swapped)
-    tLocal = t - tPTC1e;
-    tPhase = mod(tLocal, T);
-    if tPhase < durations(1)
-        epsVal = epsB * ones(size(x));  % swapped
-    else
-        epsVal = epsA * ones(size(x));  % swapped
-    end
-end
+function epsValue = domain_wall_epsilon(u,nLeft,epsA,epsB)
+% epsA is centred at integer periods on the left; epsB is centred on the
+% right.  This produces the required temporal phase slip at u=nLeft.
+isLeft = u < nLeft;
+highAtInteger = cos(2*pi*u) >= 0;
+epsValue = epsB*ones(size(u));
+epsValue(isLeft & highAtInteger) = epsA;
+epsValue(~isLeft & ~highAtInteger) = epsA;
 end

@@ -51,6 +51,14 @@ function out = fdtd1d_db(cfg)
 %
 %   如果初始场是行波脉冲，Hhalf0 需要根据传播速度和 dt/2 的时移来构造。
 %
+%   对于与 E 整数时间节点对齐的介电常数突变，可通过
+%   cfg.temporalInterfaces 显式给出界面时刻。在以界面为中心、从
+%   B^{n-1/2} 推进到 B^{n+1/2} 的更新中，求解器使用
+%
+%       E_interface = 0.5·[D/ε(t^-) + D/ε(t^+)]
+%
+%   计算空间旋度，避免只使用界面一侧 E 所造成的一阶时间误差。
+%
 
 %   ▏  Leapfrog 更新方程
 
@@ -129,6 +137,18 @@ function out = fdtd1d_db(cfg)
 %     recordEvery      - 场记录间隔（每 N 步记录一次），默认 1（每步记录）
 %     storeFields      - 是否存储完整 E/H 历史，默认 true
 %                        设为 false 可大幅降低内存占用
+%     storeD           - 是否独立存储 E 网格上的 D 历史，默认 false
+%                        与 storeFields 相互独立；即使 storeFields=false
+%                        也可以令 storeD=true 保存 D
+%     temporalInterfaces - 介电常数突变时刻的严格递增实数向量，默认空
+%                        每个时刻必须在 temporalInterfaceTolerance 内与
+%                        E 的整数时间节点 n·dt 对齐，并且小于 nSteps·dt
+%     temporalInterfaceTolerance - temporalInterfaces 的绝对对齐容差；
+%                        默认由 dt 和总仿真时长的浮点精度确定，且小于 dt/4
+%     spectralFilterMask - 可选的周期网格 FFT 掩码（长度 Nx，默认空）
+%                        若给出，则在每个 temporalInterfaces 更新后同时
+%                        过滤 D 和 B。它用于解析信号/窄带脉冲，避免有源
+%                        时变介质把舍入噪声中的非物理高 k 分量指数放大
 %     probeIndices     - 探针点索引（E 网格），即使 storeFields=false 也会
 %                        记录这些点的场值
 %     stabilityTimes   - CFL 审计的采样时刻数组
@@ -146,6 +166,7 @@ function out = fdtd1d_db(cfg)
 %   out.t               - 记录时刻数组
 %   out.E               - 电场历史矩阵 (nRecords × Nx)
 %   out.H               - 磁场历史矩阵 (nRecords × Nx)，已插值到 E 网格
+%   out.D               - 电位移历史矩阵 (nRecords × Nx)；storeD=false 时为空
 %   out.probeIndices    - 探针索引
 %   out.probeX          - 探针位置
 %   out.probeE          - 探针处电场记录
@@ -181,6 +202,13 @@ end
 dt = cfg.dt;                    % 时间步长 Δt
 nSteps = cfg.nSteps;            % 总推进步数 N_t
 % 总仿真时间 = nSteps · dt
+if ~isscalar(dt) || ~isreal(dt) || ~isfinite(dt) || dt <= 0
+    error('cfg.dt must be a finite positive real scalar.');
+end
+if ~isscalar(nSteps) || ~isreal(nSteps) || ~isfinite(nSteps) || ...
+        nSteps < 0 || nSteps ~= round(nSteps)
+    error('cfg.nSteps must be a nonnegative integer scalar.');
+end
 
 %==========================================================================
 % 第 2 部分: 可选参数的默认值处理
@@ -218,6 +246,20 @@ else
     storeFields = logical(cfg.storeFields);
 end
 
+% --- D 场历史存储开关 ---
+% 与 storeFields 独立，以便只保存复现图真正需要的 D 场。
+if ~isfield(cfg,'storeD') || isempty(cfg.storeD)
+    storeD = false;
+else
+    storeDValue = cfg.storeD;
+    if ~(islogical(storeDValue) || isnumeric(storeDValue)) || ...
+            ~isscalar(storeDValue) || ~isreal(storeDValue) || ...
+            ~isfinite(double(storeDValue))
+        error('cfg.storeD must be a finite real logical or numeric scalar.');
+    end
+    storeD = logical(storeDValue);
+end
+
 % --- 探针点 ---
 % 即使在低内存模式（storeFields=false）下，探针点的场也会被记录
 % 探针索引必须是 1..Nx 范围内的整数
@@ -249,6 +291,101 @@ if ~isfield(cfg,'progressBar') || isempty(cfg.progressBar)
     showProgress = false;
 else
     showProgress = logical(cfg.progressBar);
+end
+
+% --- 显式介电时间界面 ---
+% 界面位于 E/D 的整数时间节点。循环第 step 次更新 B 时，其中心时刻为
+% (step-1)*dt，因此节点 n 对应循环索引 n+1。
+timeScale = max(1,abs(nSteps*dt));
+defaultInterfaceTolerance = max(128*eps(timeScale),1e-12*dt);
+defaultInterfaceTolerance = min(defaultInterfaceTolerance,dt/100);
+if isfield(cfg,'temporalInterfaceTolerance') && ...
+        ~isempty(cfg.temporalInterfaceTolerance)
+    temporalInterfaceTolerance = cfg.temporalInterfaceTolerance;
+    if ~isscalar(temporalInterfaceTolerance) || ...
+            ~isreal(temporalInterfaceTolerance) || ...
+            ~isfinite(temporalInterfaceTolerance) || ...
+            temporalInterfaceTolerance <= 0 || ...
+            temporalInterfaceTolerance >= dt/4
+        error(['cfg.temporalInterfaceTolerance must be a finite positive ', ...
+            'real scalar smaller than cfg.dt/4.']);
+    end
+else
+    temporalInterfaceTolerance = defaultInterfaceTolerance;
+end
+
+if ~isfield(cfg,'temporalInterfaces') || isempty(cfg.temporalInterfaces)
+    temporalInterfaces = zeros(1,0);
+    temporalInterfaceNodes = zeros(1,0);
+else
+    temporalInterfacesInput = cfg.temporalInterfaces;
+    if ~isnumeric(temporalInterfacesInput) || ...
+            ~isvector(temporalInterfacesInput) || ...
+            ~isreal(temporalInterfacesInput) || ...
+            any(~isfinite(temporalInterfacesInput(:)))
+        error('cfg.temporalInterfaces must be a finite real numeric vector.');
+    end
+    temporalInterfacesInput = double(temporalInterfacesInput(:).');
+    if any(diff(temporalInterfacesInput) <= 0)
+        error('cfg.temporalInterfaces must be strictly increasing.');
+    end
+
+    temporalInterfaceNodes = round(temporalInterfacesInput/dt);
+    temporalInterfaces = temporalInterfaceNodes*dt;
+    alignmentError = abs(temporalInterfacesInput-temporalInterfaces);
+    if any(alignmentError > temporalInterfaceTolerance)
+        error(['Each cfg.temporalInterfaces value must align with an E-grid ', ...
+            'time n*cfg.dt within cfg.temporalInterfaceTolerance. ', ...
+            'Maximum alignment error is %.6g.'],max(alignmentError));
+    end
+    if any(temporalInterfaceNodes < 0) || ...
+            any(temporalInterfaceNodes >= nSteps)
+        error(['cfg.temporalInterfaces must lie in [0, cfg.nSteps*cfg.dt). ', ...
+            'An interface at the final time has no following B half-step.']);
+    end
+    if any(diff(temporalInterfaceNodes) <= 0)
+        error(['Distinct cfg.temporalInterfaces values must map to distinct ', ...
+            'E-grid time nodes.']);
+    end
+end
+
+temporalInterfaceIdByStep = zeros(1,nSteps,'uint32');
+if ~isempty(temporalInterfaceNodes)
+    temporalInterfaceIdByStep(temporalInterfaceNodes+1) = ...
+        uint32(1:numel(temporalInterfaceNodes));
+end
+temporalInterfaceSideOffset = dt/4;
+
+% --- 时间界面处的可选空间谱投影 ---
+% 该选项只对周期网格定义；海绵边界破坏空间平移对称性，不能使用 FFT
+% 掩码而仍保持明确的物理动量含义。
+if ~isfield(cfg,'spectralFilterMask') || isempty(cfg.spectralFilterMask)
+    spectralFilterMask = zeros(1,0);
+else
+    spectralFilterMask = cfg.spectralFilterMask(:).';
+    if ~isnumeric(spectralFilterMask) && ~islogical(spectralFilterMask)
+        error('cfg.spectralFilterMask must be a numeric or logical vector.');
+    end
+    if numel(spectralFilterMask) ~= Nx || ...
+            any(~isfinite(double(spectralFilterMask))) || ...
+            any(real(spectralFilterMask) < 0) || ...
+            any(real(spectralFilterMask) > 1) || ...
+            any(imag(spectralFilterMask) ~= 0)
+        error(['cfg.spectralFilterMask must be a finite real vector of ' ...
+            'length Nx with values in [0,1].']);
+    end
+    if ~strcmp(boundary,'periodic')
+        error('cfg.spectralFilterMask requires boundary=''periodic''.');
+    end
+    if isempty(temporalInterfaces)
+        error(['cfg.spectralFilterMask requires at least one explicit ' ...
+            'cfg.temporalInterfaces value.']);
+    end
+    if useSingle
+        spectralFilterMask = single(spectralFilterMask);
+    else
+        spectralFilterMask = double(spectralFilterMask);
+    end
 end
 
 %==========================================================================
@@ -476,6 +613,12 @@ else
     HHistory = complex(zeros(0,Nx,'like',baseZero));
 end
 
+if storeD
+    DHistory = complex(zeros(nRecords,Nx,'like',baseZero));
+else
+    DHistory = complex(zeros(0,Nx,'like',baseZero));
+end
+
 % 探针记录: 无论 storeFields 如何，探针总是被记录
 probeE = complex(zeros(nRecords,numel(probeIndices),'like',baseZero));
 probeH = complex(zeros(nRecords,numel(probeIndices),'like',baseZero));
@@ -496,6 +639,9 @@ recordId = 1;  % 当前记录索引
 if storeFields
     EHistory(recordId,:) = E;
     HHistory(recordId,:) = HOnE;  % 注意：存储的是插值到 E 网格的 H
+end
+if storeD
+    DHistory(recordId,:) = D;
 end
 
 % 记录探针点的场
@@ -541,16 +687,45 @@ for step = 1:nSteps
     % =====================================================================
     % 步骤 A: 法拉第定律 —— 更新 B（从 n-1/2 到 n+1/2）
     % =====================================================================
-    % 用 t = n·dt 时刻的 E 计算 B 的增量
+    % 用 t = n·dt 时刻的 E 计算 B 的增量。若该整数节点是显式介电
+    % 时间界面，则使用 D/ε(t^-) 与 D/ε(t^+) 的平均场。
+
+    temporalInterfaceId = temporalInterfaceIdByStep(step);
+    if temporalInterfaceId ~= 0
+        tInterface = temporalInterfaces(double(temporalInterfaceId));
+        epsBefore = cfg.epsFun(x,tInterface-temporalInterfaceSideOffset);
+        epsAfter = cfg.epsFun(x,tInterface+temporalInterfaceSideOffset);
+        if numel(epsBefore) ~= Nx || numel(epsAfter) ~= Nx
+            error(['epsFun returned an array with the wrong grid size ', ...
+                'around temporal interface %.16g.'],tInterface);
+        end
+        epsBefore = epsBefore(:).';
+        epsAfter = epsAfter(:).';
+        if any(~isfinite(real(epsBefore))) || ...
+                any(~isfinite(imag(epsBefore))) || ...
+                any(~isfinite(real(epsAfter))) || ...
+                any(~isfinite(imag(epsAfter))) || ...
+                any(abs(epsBefore) == 0) || any(abs(epsAfter) == 0)
+            error(['epsFun must return finite nonzero permittivity on both ', ...
+                'sides of temporal interface %.16g.'],tInterface);
+        end
+        if useSingle
+            epsBefore = single(epsBefore);
+            epsAfter = single(epsAfter);
+        end
+        EForBUpdate = 0.5*(D./epsBefore + D./epsAfter);
+    else
+        EForBUpdate = E;
+    end
 
     if strcmp(boundary,'periodic')
         % 周期边界: curlE(i) = E(i+1) - E(i)，最后一点用 circshift 环绕
         % circshift(E,-1) 将 E 向左循环移位 1 位，即 E(2:end) 接 E(1)
-        curlE = circshift(E,-1) - E;
+        curlE = circshift(EForBUpdate,-1) - EForBUpdate;
     else
         % 吸收边界: curlE = diff(E)，即 ∂E/∂x ≈ [E(i+1)-E(i)]/dx
         % 仅在内部点计算，边界由 sponge 处理
-        curlE = diff(E);
+        curlE = diff(EForBUpdate);
     end
 
     % B^{n+1/2} = B^{n-1/2} - (Δt/Δx)·curlE
@@ -603,6 +778,16 @@ for step = 1:nSteps
     if useSingle; epsNow = single(epsNow); end
     E = D./epsNow;                  % E = D / (ε₀·ε_r)，本构关系
 
+    % 有源时变介质会把任何落在高阶动量带隙中的舍入噪声指数放大。
+    % 对已知为窄带解析信号的周期问题，可在真实材料时间界面处投影回
+    % 用户指定的物理 k 支撑；D 和 B 必须一起投影以保持 Maxwell 状态。
+    if temporalInterfaceId ~= 0 && ~isempty(spectralFilterMask)
+        D = ifft(fft(D).*spectralFilterMask);
+        B = ifft(fft(B).*spectralFilterMask);
+        E = D./epsNow;
+        H = B./muHalf;
+    end
+
     % =====================================================================
     % 步骤 C: 按记录间隔保存场和能量
     % =====================================================================
@@ -615,6 +800,9 @@ for step = 1:nSteps
         if storeFields
             EHistory(recordId,:) = E;
             HHistory(recordId,:) = HOnE;
+        end
+        if storeD
+            DHistory(recordId,:) = D;
         end
 
         % 探针记录
@@ -657,6 +845,7 @@ out.xH = xH;                        % H 空间网格（偏移 dx/2）
 out.t = tHistory;                   % 记录时刻数组
 out.E = EHistory;                   % 电场历史（每行一个时刻）
 out.H = HHistory;                   % 磁场历史（已插值到 E 网格，每行一个时刻）
+out.D = DHistory;                   % 电位移历史（每行一个时刻）
 out.probeIndices = probeIndices;    % 探针索引
 out.probeX = x(probeIndices);       % 探针空间位置
 out.probeE = probeE;                % 探针电场记录
@@ -670,6 +859,10 @@ out.dx = dx;                        % 空间步长
 out.dt = dt;                        % 时间步长
 out.boundary = boundary;            % 边界条件类型
 out.storeFields = storeFields;      % 场存储模式
+out.storeD = storeD;                % D 历史存储模式
+out.temporalInterfaces = temporalInterfaces;
+out.temporalInterfaceTolerance = temporalInterfaceTolerance;
+out.spectralFilterMask = spectralFilterMask;
 out.sampledMaxWaveSpeed = sampledMaxWaveSpeed;  % CFL 审计波速
 out.sampledCourant = sampledCourant;            % CFL 审计 Courant 数
 out.precision = precision;                      % 数值精度

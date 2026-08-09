@@ -1,283 +1,357 @@
-function fig2_fdtd_simulations()
-%FIG2_FDTD_SIMULATIONS  Reproduce Fig. 2 of Lustig et al., Optica 5, 1390 (2018).
+function fig2_fdtd_simulations(forceRecompute)
+%FIG2_FDTD_SIMULATIONS Reproduce Fig. 2 of Lustig et al. (2018).
 %
-%   Two-panel figure from FDTD simulations:
-%     (a) Pulse in a momentum band — enters PTC, splits into two Floquet
-%         modes, exits, splits again → four output pulses.
-%     (b) Pulse in a momentum bandgap — exponential growth during PTC,
-%         then two output pulses.
-%
-%   Both pulses have FWHM ~ 45 fs. The in-band pulse has a center
-%   wavelength of 1.4 um; the in-gap pulse has center wavelength 0.93 um.
-%   The PTC starts at t=220 fs and ends at t=340 fs (60 periods).
-%
-%   NOTE: FDTD simulations are time-consuming (~3-10 min each).
-%   Set doFDTD = false to load previously saved data.
-%
-%   Reference:
-%     E. Lustig, Y. Sharabi, and M. Segev,
-%     "Topological aspects of photonic time crystals,"
-%     Optica 5, 1390-1395 (2018).  DOI: 10.1364/OPTICA.5.001390
+% The FDTD coordinate is x=z/c0 in femtoseconds, so fdtd1d_db can retain
+% c=1 while every physical time in the paper is entered directly in fs.
+% The saved and plotted field is the electric displacement D, not E.
 
-% --- Add parent toolbox to path ---
+if nargin < 1
+    forceRecompute = false;
+end
+validateattributes(forceRecompute,{'logical','numeric'},{'scalar'});
+forceRecompute = logical(forceRecompute);
+
 rootDir = fileparts(fileparts(fileparts(mfilename('fullpath'))));
-run(fullfile(rootDir, 'startup_stm.m'));
+run(fullfile(rootDir,'startup_stm.m'));
 
-% =========================================================================
-% Configuration
-% =========================================================================
-doFDTD = true;   % set to false to load saved data
-outputDir = fullfile(fileparts(mfilename('fullpath')), 'output');
-if ~exist(outputDir, 'dir'), mkdir(outputDir); end
+outputDir = fullfile(fileparts(mfilename('fullpath')),'output');
+if ~exist(outputDir,'dir'), mkdir(outputDir); end
 
-% =========================================================================
-% PTC parameters (matching the paper)
-% =========================================================================
-eps1 = 3;   eps2 = 1;
-mu1  = 1;   mu2  = 1;
-T    = 2*pi;
-t1   = 0.5*T;
-t2   = 0.5*T;
-epsBg = (eps1 + eps2)/2;
-muBg  = 1;
-nBg   = sqrt(epsBg);
+% -------------------------------------------------------------------------
+% Literal parameters stated in the article.
+% -------------------------------------------------------------------------
+p.c0 = 0.299792458;                 % um/fs
+p.eps1 = 3;
+p.eps2 = 1;
+p.epsBackground = 1;               % free space
+p.mu = 1;
+p.T = 2;                            % fs
+p.tStart = 220;                     % fs
+p.tEnd = 340;                       % fs (60 periods)
+p.tStop = 500;                      % fs
+p.nPeriods = round((p.tEnd-p.tStart)/p.T);
+p.fwhm = 45;                        % fs, FWHM of the plotted |D| envelope
+p.sigmaX = p.fwhm/(2*sqrt(log(2))); % exp[-(x/sigmaX)^2] amplitude
+p.zInitial = 0;                     % um
+p.zMin = -50;                       % padded computational domain
+p.zMax = 190;
+p.zPlot = [0 140];
+p.dt = p.T/80;                      % 40 steps per half-period
+p.courant = 0.8;
+p.dx = p.dt/p.courant;              % x coordinate has units fs
+p.recordEvery = 20;                 % output every 0.5 fs
+p.modelVersion = 'fig2-literal60-D-boundary-v10-converged';
 
-% =========================================================================
-% Part A: In-band pulse
-% =========================================================================
-dataFileInBand = fullfile(outputDir, 'fig2_inband_data.mat');
+if abs(p.nPeriods*p.T-(p.tEnd-p.tStart)) > 10*eps(p.tEnd)
+    error('The PTC window is not an integer number of periods.');
+end
 
-if doFDTD || ~exist(dataFileInBand, 'file')
-    fprintf('=== Part A: In-band FDTD simulation ===\n');
+caseBand = struct('name','inband','label','Band propagation', ...
+    'lambda',1.4,'clim',[-1.5 0]);
+caseGap = struct('name','ingap','label','Gap propagation', ...
+    'lambda',0.93,'clim',[0 10]);
 
-    % Find in-band k value (~1.4 um wavelength → k ≈ 2π/1.4 ≈ 4.5...
-    % but with dimensionless units, we find k from band structure)
-    kScan = linspace(0.01, 2.5, 2500);
-    bands = temporal_crystal_bands(kScan, [eps1 eps2], [mu1 mu2], [t1 t2]);
-    halfTr = bands.halfTrace;
-    inBand = abs(halfTr) <= 1;
+dataBand = run_or_load_case(caseBand,p,outputDir,forceRecompute);
+dataGap = run_or_load_case(caseGap,p,outputDir,forceRecompute);
 
-    d = diff([false, inBand, false]);
-    bStarts = find(d == 1);
-    bEnds   = find(d == -1) - 1;
-    nBands = length(bStarts);
+% -------------------------------------------------------------------------
+% The article states both N=60 and an approximately 20,000-fold maximum.
+% Exact TMM exposes that these two numbers are mutually inconsistent.
+% -------------------------------------------------------------------------
+kGap = 2*pi*p.c0/caseGap.lambda;
+% The finite Fig. 2 crystal turns on at the beginning of an eps1 segment.
+% This phase gives the four published in-band branches.  It is a cyclic
+% representation of the same bulk cell used for the Fig. 1 dispersion.
+epsCell = [p.eps1 p.eps2];
+durations = [p.T/2 p.T/2];
+response20 = temporal_finite_crystal_response(kGap,epsCell,[1 1], ...
+    durations,20,p.epsBackground,p.mu,[1;0]);
+response60 = temporal_finite_crystal_response(kGap,epsCell,[1 1], ...
+    durations,60,p.epsBackground,p.mu,[1;0]);
+coherent20 = abs(response20.forward)+abs(response20.backward);
+coherent60 = abs(response60.forward)+abs(response60.backward);
+fprintf(['Paper consistency audit at lambda=0.93 um: exact coherent TMM ' ...
+    'peak N=20 is %.5g (ln=%.3f), whereas N=60 is %.5g ' ...
+    '(ln=%.3f).\n'],coherent20,log(coherent20), ...
+    coherent60,log(coherent60));
+fprintf(['The FDTD below keeps the literal 60-period interval; panel (b) ' ...
+    'uses the published natural-log color range 0..10 and clips larger gain.\n']);
 
-    % Target the 3rd band for good visibility
-    targetK = 1.0;
-    bestBand = 1;  bestDist = inf;
-    for b = 1:nBands
-        kMid = (kScan(bStarts(b)) + kScan(bEnds(b))) / 2;
-        dist = abs(kMid - targetK);
-        if dist < bestDist && (bEnds(b) - bStarts(b)) > 20
-            bestDist = dist;  bestBand = b;
+% -------------------------------------------------------------------------
+% Figure: natural logarithm of normalized |D|, so the published upper gap
+% limit 10 corresponds to exp(10)=2.20e4.
+% -------------------------------------------------------------------------
+fig = figure('Color','w','Position',[60 60 840 460]);
+tl = tiledlayout(fig,1,2,'TileSpacing','compact','Padding','compact');
+plot_case(nexttile(tl),dataBand,caseBand,p,'(a)');
+plot_case(nexttile(tl),dataGap,caseGap,p,'(b)');
+
+outputFile = fullfile(outputDir,'fig2_fdtd_simulations.png');
+exportgraphics(fig,outputFile,'Resolution',250);
+
+audit = struct();
+audit.coherentTmm20 = coherent20;
+audit.coherentTmm60 = coherent60;
+audit.logCoherentTmm20 = log(coherent20);
+audit.logCoherentTmm60 = log(coherent60);
+audit.log10CoherentTmm20 = log10(coherent20);
+audit.log10CoherentTmm60 = log10(coherent60);
+audit.paperClaimedGain = 2e4;
+audit.fdtdMaximumGain60 = dataGap.maximumGain;
+audit.fdtdToTmm60Ratio = dataGap.maximumGain/coherent60;
+audit.note = ['The paper''s 60-period duration and approximately 20000 ' ...
+    'gain cannot both hold for its stated binary PTC parameters.'];
+if ~isfinite(audit.fdtdToTmm60Ratio) || ...
+        audit.fdtdToTmm60Ratio < 0.7 || audit.fdtdToTmm60Ratio > 1.3
+    error('The 60-period gap FDTD gain does not agree with exact TMM.');
+end
+save(fullfile(outputDir,'fig2_audit.mat'),'p','caseBand','caseGap','audit');
+fprintf('Saved: %s\n',outputFile);
+end
+
+function data = run_or_load_case(caseDef,p,outputDir,forceRecompute)
+dataFile = fullfile(outputDir,['fig2_' caseDef.name '_data.mat']);
+if ~forceRecompute && exist(dataFile,'file')
+    cached = load(dataFile,'data');
+    if isfield(cached,'data') && isfield(cached.data,'modelVersion') && ...
+            strcmp(cached.data.modelVersion,p.modelVersion)
+        candidate = cached.data;
+        required = {'D','logAmplitude','initialPeak','maximumGain', ...
+            'zPeakAtStart','measuredPeaksAtEnd', ...
+            'measuredVisiblePeaksAtFinal'};
+        cacheIsFinite = all(isfield(candidate,required)) && ...
+            all(isfinite(candidate.D(:))) && ...
+            all(isfinite(candidate.logAmplitude(:))) && ...
+            all(isfinite([candidate.initialPeak candidate.maximumGain ...
+                candidate.zPeakAtStart candidate.measuredPeaksAtEnd(:).' ...
+                candidate.measuredVisiblePeaksAtFinal(:).']));
+        if cacheIsFinite
+            data = candidate;
+            fprintf('Loaded validated Fig. 2 cache: %s\n',dataFile);
+            return;
         end
+        warning('Ignoring non-finite or incomplete Fig. 2 cache: %s',dataFile);
     end
-    bandIdx = bestBand;
-    kMidIdx = round((bStarts(bandIdx) + bEnds(bandIdx)) / 2);
-    k0_inband = kScan(kMidIdx);
-    lambda0_inband = 2*pi / k0_inband;
-    fprintf('  Band %d: k0=%.4f, lambda=%.4f, |Tr/2|=%.3f\n', ...
-        bandIdx, k0_inband, lambda0_inband, abs(halfTr(kMidIdx)));
+end
 
-    % FDTD grid
-    dx = lambda0_inband / 28;
-    xDomain = 140;
-    x = 0:dx:xDomain;
-    Nx = numel(x);
-    dt = 0.8 * dx;
-    fprintf('  Grid: Nx=%d, dx=%.4f, dt=%.4f\n', Nx, dx, dt);
+fprintf('Running Fig. 2 %s FDTD (lambda=%.2f um)...\n', ...
+    caseDef.name,caseDef.lambda);
 
-    % Initial pulse
-    x0 = xDomain * 0.22;
-    sigma = 2.5;
-    pulseFn = @(xq) exp(-((xq-x0)/sigma).^2) .* exp(1i*k0_inband*(xq-x0));
-    E0_inband = pulseFn(x);
-    vBg = 1/nBg;
-    xH = x(1:end-1) + dx/2;
-    H0_inband = nBg * pulseFn(xH + vBg*dt/2);
+% Use a padded domain; only z=0..140 um is retained for the paper panel.
+nIntervals = ceil(((p.zMax-p.zMin)/p.c0)/p.dx);
+x = (0:nIntervals)*p.dx+p.zMin/p.c0;
+z = p.c0*x;
+xH = x+p.dx/2;
+k = 2*pi*p.c0/caseDef.lambda;
+xInitial = p.zInitial/p.c0;
+pulse = @(xq) exp(-((xq-xInitial)/p.sigmaX).^2).* ...
+    exp(1i*k*(xq-xInitial));
 
-    % PTC window
-    tStart = 220;  tEnd = 340;
-    nPeriods = round((tEnd - tStart) / T);
-    tEnd = tStart + nPeriods * T;
-    tSim = tEnd + 120;
-    nSteps = ceil(tSim / dt);
-    fprintf('  PTC: [%.1f, %.1f], %d periods, %d steps\n', ...
-        tStart, tEnd, nPeriods, nSteps);
-
-    cfg = struct('x', x, 'dt', dt, 'nSteps', nSteps, ...
-        'epsFun', @(xq,tq) ptcEps(xq,tq,epsBg,eps1,eps2,t1,t2,tStart,tEnd), ...
-        'muFun', @(xq,tq) ones(size(xq)), ...
-        'E0', E0_inband, 'Hhalf0', H0_inband, ...
-        'boundary', 'sponge', 'spongeCells', 140, 'spongeStrength', 0.10, ...
-        'recordEvery', 5, 'storeFields', true, 'progressBar', true);
-    out_inband = fdtd1d_db(cfg);
-    halfTr_inband = abs(halfTr(kMidIdx));
-    save(dataFileInBand, 'out_inband', 'k0_inband', 'lambda0_inband', ...
-        'bandIdx', 'tStart', 'tEnd', 'nPeriods', 'x0', 'halfTr_inband');
-    fprintf('  Saved in-band data.\n');
+% The problem is spatially homogeneous, so k is exactly conserved.  Build
+% a periodic analytic-signal grid and explicitly retain the physical pulse
+% spectrum.  The cutoff removes less than 5e-6 of the Gaussian amplitude.
+Nx = numel(x);
+if mod(Nx,2) == 0
+    fftOrders = [0:Nx/2-1 -Nx/2:-1];
 else
-    fprintf('=== Loading saved in-band data ===\n');
-    load(dataFileInBand, 'out_inband', 'k0_inband', 'lambda0_inband', ...
-        'bandIdx', 'tStart', 'tEnd', 'nPeriods', 'x0', 'halfTr_inband');
+    fftOrders = [0:(Nx-1)/2 -(Nx-1)/2:-1];
+end
+kGrid = (2*pi/(Nx*p.dx))*fftOrders;
+filterFlatWidth = 5/p.sigmaX;
+filterStopWidth = 7/p.sigmaX;
+distanceFromCarrier = abs(kGrid-k);
+spectralFilterMask = zeros(size(kGrid));
+spectralFilterMask(distanceFromCarrier <= filterFlatWidth) = 1;
+transition = distanceFromCarrier > filterFlatWidth & ...
+    distanceFromCarrier < filterStopWidth;
+s = (distanceFromCarrier(transition)-filterFlatWidth)/ ...
+    (filterStopWidth-filterFlatWidth);
+leftBump = exp(-1./(1-s));
+rightBump = exp(-1./s);
+spectralFilterMask(transition) = leftBump./(leftBump+rightBump);
+E0 = ifft(fft(pulse(x)).*spectralFilterMask);
+Hhalf0 = ifft(fft(pulse(xH+p.dt/2)).*spectralFilterMask);
+
+nSteps = round(p.tStop/p.dt);
+events = ptc_interface_times(p.tStart,p.tEnd,p.T);
+cfg = struct();
+cfg.x = x;
+cfg.dt = p.dt;
+cfg.nSteps = nSteps;
+cfg.epsFun = @(xq,tq) finite_ptc_epsilon(xq,tq,p);
+cfg.muFun = @(xq,tq) ones(size(xq));
+cfg.E0 = E0;
+cfg.Hhalf0 = Hhalf0;
+cfg.boundary = 'periodic';
+cfg.recordEvery = p.recordEvery;
+cfg.storeFields = false;
+cfg.storeD = true;
+cfg.probeIndices = round(linspace(1,numel(x),9));
+% A time crystal exponentially amplifies every grid Fourier component that
+% lies in any momentum gap.  Single-precision roundoff therefore becomes a
+% visible, spatially uniform false background during 60 periods.
+cfg.precision = 'double';
+cfg.progressBar = true;
+cfg.temporalInterfaces = events;
+cfg.spectralFilterMask = spectralFilterMask;
+cfg.stabilityTimes = [0 p.tStart p.tStart+p.T/4 ...
+    p.tStart+3*p.T/4 p.tEnd p.tStop];
+
+out = fdtd1d_db(cfg);
+crop = z >= p.zPlot(1) & z <= p.zPlot(2);
+Dcrop = single(out.D(:,crop));      % solve in double; compact the cache only
+initialPeak = max(abs(Dcrop(1,:)));
+logAmplitude = log(max(abs(Dcrop)/initialPeak,exp(-35)));
+
+% Simple trajectory checks that catch the old unit/domain failure.
+[~,idStart] = min(abs(out.t-p.tStart));
+[~,idEnd] = min(abs(out.t-p.tEnd));
+zCrop = z(crop);
+[~,peakStartId] = max(abs(Dcrop(idStart,:)));
+zPeakAtStart = zCrop(peakStartId);
+expectedStart = p.zInitial+p.c0*p.tStart;
+if abs(zPeakAtStart-expectedStart) > 3
+    error(['Pulse centre at PTC onset is %.3f um; expected approximately ' ...
+        '%.3f um. The physical-unit mapping is inconsistent.'], ...
+        zPeakAtStart,expectedStart);
+end
+if max(abs(Dcrop(idStart,:))) < 0.75*initialPeak
+    error('The pulse was substantially attenuated before the PTC began.');
 end
 
-% =========================================================================
-% Part B: In-gap pulse
-% =========================================================================
-dataFileInGap = fullfile(outputDir, 'fig2_ingap_data.mat');
+data = struct();
+data.modelVersion = p.modelVersion;
+data.name = caseDef.name;
+data.lambda = caseDef.lambda;
+data.k = k;
+data.z = zCrop;
+data.t = out.t;
+data.D = Dcrop;
+data.logAmplitude = logAmplitude;
+data.initialPeak = initialPeak;
+data.zPeakAtStart = zPeakAtStart;
+data.expectedZPeakAtStart = expectedStart;
+data.peakAtStart = max(abs(Dcrop(idStart,:)));
+data.peakAtEnd = max(abs(Dcrop(idEnd,:)));
+data.maximumGain = max(abs(Dcrop(:)))/initialPeak;
+data.sampledCourant = out.sampledCourant;
+data.dxNumerical = out.dx;
+data.dxMicrometre = p.c0*out.dx;
+data.dt = out.dt;
+data.temporalInterfaces = out.temporalInterfaces;
+data.filterFlatWidth = filterFlatWidth;
+data.filterStopWidth = filterStopWidth;
+data.spectralFilterMask = spectralFilterMask;
+data.parameters = p;
 
-if doFDTD || ~exist(dataFileInGap, 'file')
-    fprintf('\n=== Part B: In-gap FDTD simulation ===\n');
-
-    kScan = linspace(0.01, 2.5, 2500);
-    bands = temporal_crystal_bands(kScan, [eps1 eps2], [mu1 mu2], [t1 t2]);
-    halfTr = bands.halfTrace;
-    inGap = abs(halfTr) > 1;
-
-    dG = diff([false, inGap, false]);
-    gStarts = find(dG == 1);
-    gEnds   = find(dG == -1) - 1;
-    nGaps = length(gStarts);
-
-    % Use 2nd gap (cleaner exponential growth)
-    if nGaps >= 2, gapIdx = 2; else, gapIdx = 1; end
-    kMidIdxGap = round((gStarts(gapIdx) + gEnds(gapIdx)) / 2);
-    k0_ingap = kScan(kMidIdxGap);
-    lambda0_ingap = 2*pi / k0_ingap;
-    fprintf('  Gap %d: k0=%.4f, lambda=%.4f, |Tr/2|=%.3f\n', ...
-        gapIdx, k0_ingap, lambda0_ingap, abs(halfTr(kMidIdxGap)));
-
-    % Expected growth
-    omegaF0 = bands.omegaF(:, kMidIdxGap);
-    [~, growIdx] = max(abs(imag(omegaF0)));
-    gammaFDTD = abs(imag(omegaF0(growIdx)));
-    nPeriodsFDTD = round((340-220)/T);
-    expectedGain = exp(gammaFDTD * nPeriodsFDTD * T);
-    fprintf('  Expected gain over %d periods: e^{%.2f} ≈ %.1e\n', ...
-        nPeriodsFDTD, gammaFDTD*nPeriodsFDTD*T, expectedGain);
-
-    % FDTD grid (same as in-band)
-    dx = lambda0_ingap / 28;
-    xDomain = 140;
-    x = 0:dx:xDomain;
-    dt = 0.8 * dx;
-    fprintf('  Grid: Nx=%d, dx=%.4f, dt=%.4f\n', numel(x), dx, dt);
-
-    % Pulse
-    x0 = xDomain * 0.22;
-    sigma = 2.5;
-    pulseFn = @(xq) exp(-((xq-x0)/sigma).^2) .* exp(1i*k0_ingap*(xq-x0));
-    E0_ingap = pulseFn(x);
-    xH = x(1:end-1) + dx/2;
-    H0_ingap = nBg * pulseFn(xH + vBg*dt/2);
-
-    tStart = 220;  tEnd = 340;
-    nPeriods = round((tEnd - tStart) / T);
-    tEnd = tStart + nPeriods * T;
-    tSim = tEnd + 120;
-    nSteps = ceil(tSim / dt);
-
-    cfg = struct('x', x, 'dt', dt, 'nSteps', nSteps, ...
-        'epsFun', @(xq,tq) ptcEps(xq,tq,epsBg,eps1,eps2,t1,t2,tStart,tEnd), ...
-        'muFun', @(xq,tq) ones(size(xq)), ...
-        'E0', E0_ingap, 'Hhalf0', H0_ingap, ...
-        'boundary', 'sponge', 'spongeCells', 140, 'spongeStrength', 0.10, ...
-        'recordEvery', 5, 'storeFields', true, 'progressBar', true);
-    out_ingap = fdtd1d_db(cfg);
-    halfTr_ingap = abs(halfTr(kMidIdxGap));
-    save(dataFileInGap, 'out_ingap', 'k0_ingap', 'lambda0_ingap', ...
-        'gapIdx', 'tStart', 'tEnd', 'nPeriods', 'x0', 'halfTr_ingap', 'expectedGain');
-    fprintf('  Saved in-gap data.\n');
+if strcmp(caseDef.name,'inband')
+    groupSpeedX = floquet_group_speed(k,p);
+    expectedEnd = expectedStart+[-1 1]*p.c0*groupSpeedX* ...
+        (p.tEnd-p.tStart);
+    actualEnd = window_peaks(zCrop,abs(Dcrop(idEnd,:)),expectedEnd,12);
+    expectedFinal = reshape(expectedEnd(:)+ ...
+        [-1 1]*p.c0*(p.tStop-p.tEnd),1,[]);
 else
-    fprintf('=== Loading saved in-gap data ===\n');
-    load(dataFileInGap, 'out_ingap', 'k0_ingap', 'lambda0_ingap', ...
-        'gapIdx', 'tStart', 'tEnd', 'nPeriods', 'x0', 'halfTr_ingap', 'expectedGain');
+    groupSpeedX = 0;
+    expectedEnd = [expectedStart expectedStart];
+    actualEnd = window_peaks(zCrop,abs(Dcrop(idEnd,:)),expectedStart,12);
+    expectedFinal = expectedStart+[-1 1]*p.c0*(p.tStop-p.tEnd);
+end
+[~,idFinal] = min(abs(out.t-p.tStop));
+insidePlot = expectedFinal >= p.zPlot(1) & expectedFinal <= p.zPlot(2);
+actualFinal = window_peaks(zCrop,abs(Dcrop(idFinal,:)), ...
+    expectedFinal(insidePlot),12);
+data.floquetGroupSpeedOverC = groupSpeedX;
+data.expectedPeaksAtEnd = expectedEnd;
+data.measuredPeaksAtEnd = actualEnd;
+data.expectedVisiblePeaksAtFinal = expectedFinal(insidePlot);
+data.measuredVisiblePeaksAtFinal = actualFinal;
+if ~all(isfinite(Dcrop(:))) || ~all(isfinite(logAmplitude(:))) || ...
+        ~all(isfinite([initialPeak data.maximumGain zPeakAtStart ...
+            actualEnd(:).' actualFinal(:).']))
+    error('The Fig. 2 FDTD produced non-finite fields or trajectory metrics.');
+end
+fprintf('  Ridge audit at tEnd expected %s um, measured %s um.\n', ...
+    mat2str(expectedEnd,4),mat2str(actualEnd,4));
+fprintf('  Ridge audit at tStop expected %s um, measured %s um.\n', ...
+    mat2str(expectedFinal(insidePlot),4),mat2str(actualFinal,4));
+if any(abs(actualEnd(:)-expectedEnd(1:numel(actualEnd)).') > 8) || ...
+        any(abs(actualFinal(:)-expectedFinal(insidePlot).') > 8)
+    error('The simulated pulse ridges deviate from the Floquet trajectory audit.');
 end
 
-% =========================================================================
-% Create Figure 2
-% =========================================================================
-fig = figure('Color', 'w', 'Position', [30 30 1400 600]);
-tl = tiledlayout(fig, 1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
-
-% --- Panel (a): In-band ---
-axA = nexttile(tl);
-Eabs = abs(out_inband.E);
-Eabs(Eabs < 1e-10) = 1e-10;
-imagesc(axA, out_inband.x, out_inband.t, log10(Eabs));
-set(axA, 'YDir', 'normal');
-hold(axA, 'on');
-
-yline(axA, tStart, 'w--', 'LineWidth', 1.5);
-yline(axA, tEnd, 'w--', 'LineWidth', 1.5);
-xL = axA.XLim;
-fill(axA, [xL(1) xL(2) xL(2) xL(1)], [tStart tStart tEnd tEnd], ...
-    'white', 'FaceAlpha', 0.10, 'EdgeColor', 'none');
-
-cbar = colorbar(axA);
-cbar.Label.String = 'log_{10}|D|';
-cbar.Label.FontSize = 10;
-xlabel(axA, 'Space  x', 'FontSize', 12);
-ylabel(axA, 'Time  t', 'FontSize', 12);
-title(axA, sprintf('(a)  Pulse in a band  (k_0=%.3f, band %d)', ...
-    k0_inband, bandIdx), 'FontSize', 13, 'FontWeight', 'bold');
-colormap(axA, jet(256));
-set(axA, 'FontSize', 10);
-
-% --- Panel (b): In-gap ---
-axB = nexttile(tl);
-Eabs = abs(out_ingap.E);
-Eabs(Eabs < 1e-10) = 1e-10;
-imagesc(axB, out_ingap.x, out_ingap.t, log10(Eabs));
-set(axB, 'YDir', 'normal');
-hold(axB, 'on');
-
-yline(axB, tStart, 'w--', 'LineWidth', 1.5);
-yline(axB, tEnd, 'w--', 'LineWidth', 1.5);
-xL = axB.XLim;
-fill(axB, [xL(1) xL(2) xL(2) xL(1)], [tStart tStart tEnd tEnd], ...
-    'white', 'FaceAlpha', 0.10, 'EdgeColor', 'none');
-
-cbar = colorbar(axB);
-cbar.Label.String = 'log_{10}|D|';
-cbar.Label.FontSize = 10;
-xlabel(axB, 'Space  x', 'FontSize', 12);
-ylabel(axB, 'Time  t', 'FontSize', 12);
-title(axB, sprintf('(b)  Pulse in a bandgap  (k_0=%.3f, gap %d)', ...
-    k0_ingap, gapIdx), 'FontSize', 13, 'FontWeight', 'bold');
-colormap(axB, jet(256));
-set(axB, 'FontSize', 10);
-
-% Overall title
-title(tl, sprintf(['Fig. 2: FDTD — amplitude of |D(x,t)|  ' ...
-    '(\\epsilon_1=%d, \\epsilon_2=%d, T=%.4g, %d periods)'], ...
-    eps1, eps2, T, nPeriods), 'FontSize', 13, 'FontWeight', 'bold');
-
-% =========================================================================
-% Save
-% =========================================================================
-outputFile = fullfile(outputDir, 'fig2_fdtd_simulations.png');
-try
-    exportgraphics(fig, outputFile, 'Resolution', 150);
-catch
-    print(fig, outputFile, '-dpng', '-r150');
-end
-fprintf('\nSaved: %s\n', outputFile);
+if strcmp(caseDef.name,'inband') && data.maximumGain > 20
+    error(['The in-band run developed nonphysical broadband gain ' ...
+        '(maximum %.4g). Increase numerical precision or filtering.'], ...
+        data.maximumGain);
 end
 
-% =========================================================================
-function epsVal = ptcEps(x, t, epsBg, eps1, eps2, t1, t2, tStart, tEnd)
-if t < tStart || t > tEnd
-    epsVal = epsBg * ones(size(x));
+save(dataFile,'data','-v7.3');
+fprintf(['  Nx=%d, Nt=%d, dz=%.5f um, onset centre=%.3f um, ' ...
+    'maximum |D|/|D0|=%.5g.\n'],numel(x),nSteps, ...
+    data.dxMicrometre,zPeakAtStart,data.maximumGain);
+fprintf('  Saved: %s\n',dataFile);
+end
+
+function plot_case(ax,data,caseDef,p,panelLabel)
+imagesc(ax,data.z,data.t,data.logAmplitude);
+axis(ax,'xy');
+colormap(ax,turbo(256));
+clim(ax,caseDef.clim);
+hold(ax,'on');
+zMarker = p.zPlot(2)-5;
+plot(ax,[zMarker zMarker],[p.tStart p.tEnd],'w-','LineWidth',1.2);
+plot(ax,zMarker,p.tStart,'w_','MarkerSize',8,'LineWidth',1.2);
+plot(ax,zMarker,p.tEnd,'w_','MarkerSize',8,'LineWidth',1.2);
+text(ax,zMarker-2,0.5*(p.tStart+p.tEnd),'\epsilon(t)', ...
+    'Color','w','HorizontalAlignment','right','FontWeight','bold');
+xlim(ax,p.zPlot);
+ylim(ax,[0 p.tStop]);
+xlabel(ax,'z [\mum]');
+ylabel(ax,'t [fs]');
+title(ax,sprintf('%s   %s',panelLabel,caseDef.label), ...
+    'FontWeight','normal');
+cb = colorbar(ax);
+cb.Label.String = 'ln(|D|/max|D(t=0)|)';
+set(ax,'FontSize',9,'Layer','top');
+box(ax,'on');
+end
+
+function interfaces = ptc_interface_times(tStart,tEnd,T)
+interfaces = tStart:T/2:tEnd;
+end
+
+function epsValue = finite_ptc_epsilon(x,t,p)
+% Half-open PTC window [tStart,tEnd), beginning with a full eps1 half-cell.
+if t < p.tStart || t >= p.tEnd
+    scalarEps = p.epsBackground;
 else
-    tLocal = t - tStart;
-    Tper = t1 + t2;
-    tPhase = mod(tLocal, Tper);
-    if tPhase < t1
-        epsVal = eps1 * ones(size(x));
+    tau = mod(t-p.tStart,p.T);
+    if tau < p.T/2
+        scalarEps = p.eps1;
     else
-        epsVal = eps2 * ones(size(x));
+        scalarEps = p.eps2;
     end
+end
+epsValue = scalarEps*ones(size(x));
+end
+
+function speed = floquet_group_speed(k,p)
+dk = 1e-5*max(1,abs(k));
+probeK = [k-dk k+dk];
+b = temporal_crystal_bands(probeK, ...
+    [p.eps1 p.eps2],[1 1],[p.T/2 p.T/2]);
+h = min(1,max(-1,real(b.halfTrace)));
+omega = acos(h)/p.T;
+speed = abs(diff(omega)/(2*dk));
+end
+
+function positions = window_peaks(z,amplitude,expected,halfWidth)
+positions = nan(size(expected));
+for j = 1:numel(expected)
+    ids = find(abs(z-expected(j)) <= halfWidth);
+    if isempty(ids), continue; end
+    [~,localId] = max(amplitude(ids));
+    positions(j) = z(ids(localId));
 end
 end
