@@ -1,14 +1,14 @@
-function run_all_reproductions(forceFDTD)
+function run_all_reproductions(forceFig2)
 %RUN_ALL_REPRODUCTIONS Generate the corrected published Figs. 1, 2, 4, 5.
 %
 %   run_all_reproductions()       reuses validated Fig. 2 cache files
-%   run_all_reproductions(true)   recomputes both Fig. 2 FDTD cases
+%   run_all_reproductions(true)   recomputes both exact-k Fig. 2 cases
 
 if nargin < 1
-    forceFDTD = false;
+    forceFig2 = false;
 end
-validateattributes(forceFDTD,{'logical','numeric'},{'scalar'});
-forceFDTD = logical(forceFDTD);
+validateattributes(forceFig2,{'logical','numeric'},{'scalar'});
+forceFig2 = logical(forceFig2);
 
 rootDir = fileparts(fileparts(fileparts(mfilename('fullpath'))));
 run(fullfile(rootDir,'startup_stm.m'));
@@ -22,8 +22,8 @@ fprintf('==============================================================\n');
 
 jobs = { ...
     'Fig. 1: bands and Zak labels', @() fig1_ptc_bands(); ...
-    'Fig. 2: D/B-Yee FDTD',        @() fig2_fdtd_simulations(forceFDTD); ...
-    'Fig. 4: first six gap phases',@() fig4_relative_phase(); ...
+    'Fig. 2: exact-k D/B dynamics', @() fig2_fdtd_simulations(forceFig2); ...
+    'Fig. 4: six published phases',@() fig4_relative_phase(); ...
     'Fig. 5: temporal edge pulse', @() fig5_temporal_edge_state()};
 
 for j = 1:size(jobs,1)
