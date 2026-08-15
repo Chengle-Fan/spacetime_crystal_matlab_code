@@ -69,6 +69,7 @@ run_all_demos(true)    % 完整（含论文级精度）
 | 文档 | 说明 |
 |------|------|
 | [docs/manual.md](docs/manual.md) | **完整中文用户手册** — 参数设计、能带计算、拓扑不变量、TMM/FDTD 仿真、函数索引 |
+| [docs/tool-reference.md](docs/tool-reference.md) | **函数工具书** — 全部 113 个 `.m` 文件的函数签名、输入/输出参数与功能说明 |
 | [docs/conventions.md](docs/conventions.md) | **物理约定与适用域** — 时间因子符号、界面连续量、模型选择边界、常见误判 |
 | [docs/paper-map.md](docs/paper-map.md) | **文献覆盖矩阵** — 库中 20 份 PDF 与代码的逐项覆盖状态 |
 | [docs/roadmap.md](docs/roadmap.md) | **研究路线图** — 从现有代码出发的课题扩展方向 |
