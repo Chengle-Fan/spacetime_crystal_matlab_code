@@ -91,7 +91,7 @@ uStep = linspace(0,nLeft+nRight,6401);
 epsStep = domain_wall_epsilon(uStep,nLeft,epsA,epsB);
 stairs(axA,uStep,epsStep,'Color',[0 0.4470 0.7410],'LineWidth',1.4);
 xline(axA,interfacePeriod,':','Color',[0.35 0.35 0.35]);
-text(axA,interfacePeriod+0.15,2.65,'interface','FontSize',8);
+%text(axA,interfacePeriod+0.15,2.65,'interface','FontSize',8);
 xlim(axA,[0 nLeft+nRight]);
 ylim(axA,[0.75 3.25]);
 yticks(axA,[epsB epsA]);

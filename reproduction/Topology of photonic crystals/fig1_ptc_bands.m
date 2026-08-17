@@ -93,8 +93,8 @@ epsProfile(cos(2*pi*u) >= 0) = eps2;
 stairs(axA,u,epsProfile,'Color',[0 0.4470 0.7410],'LineWidth',1.7);
 hold(axA,'on');
 xline(axA,0,':','Color',[0.45 0.45 0.45],'LineWidth',0.8);
-text(axA,0.12,1.22,'time-inversion centre','FontSize',8, ...
-    'Color',[0.35 0.35 0.35]);
+% text(axA,0.12,1.22,'time-inversion centre','FontSize',8, ...
+%     'Color',[0.35 0.35 0.35]);
 xlabel(axA,'t/T');
 ylabel(axA,'\epsilon(t)');
 yticks(axA,[eps2 eps1]);
