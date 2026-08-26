@@ -1,6 +1,6 @@
 # 函数工具书 (Function Reference)
 
-> 本工具书是 [docs/manual.md](manual.md)（用户手册）与 [docs/conventions.md](conventions.md)（物理约定）的配套**函数级参考**，逐一记录本仓库全部 MATLAB 文件的函数签名、输入参数、输出参数与功能说明。
+> 本工具书是**函数级参考**，逐一记录本仓库全部 MATLAB 文件的函数签名、输入参数、输出参数与功能说明。每类方法的完整用法与物理约定见 [learn/ 教程](../learn/README.md) 的对应章节。
 > 返回 [README.md](../README.md)
 
 ---
@@ -9,7 +9,7 @@
 
 - **覆盖范围**：本仓库 113 个 `.m` 文件，共 **154 个文档条目**（含嵌套子函数 / 局部辅助函数）。文档基于逐文件阅读源代码生成，函数签名与参数以实际代码为准，不含臆测。
 - **阅读方式**：每个函数是一个 `### 函数名` 三级标题，可直接用编辑器（VSCode / MATLAB）的「大纲 / Outline」面板按函数名跳转；每个目录为一章（`##` 二级标题）。
-- **符号约定**：时间因子 $e^{i(kx-\omega t)}$、时间界面上 $D$ 与 $B$ 连续、$\operatorname{Im}\omega>0$ 表示时间增长等约定见 [conventions.md](conventions.md)，各条目的「备注」中也会标注局部约定。
+- **符号约定**：时间因子 $e^{i(kx-\omega t)}$、时间界面上 $D$ 与 $B$ 连续、$\operatorname{Im}\omega>0$ 表示时间增长等约定见 [learn/02 章](../learn/02-physics-background.md)（物理背景）与 [learn/05 章 §2](../learn/05-temporal-tmm.md)（界面连续量），各条目的「备注」中也会标注局部约定。
 - **依赖关系**：跨目录的调用关系在每个条目的「备注」中说明；入口脚本的运行顺序见 `run_all_demos.m` 与各子项目的 `run_all_reproductions.m`。
 
 ## 目录 / Contents

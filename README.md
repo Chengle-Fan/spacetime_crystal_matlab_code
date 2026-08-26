@@ -8,38 +8,21 @@ A MATLAB toolkit for analyzing and simulating **one-dimensional spacetime-period
 
 ## 快速开始 / Quick Start
 
-### 第一次运行 / First Run
-
 ```matlab
 startup_stm        % 设置路径
 test_smoke         % 自检测试
+run_all_demos(false)   % 运行全部示例（快速）
 ```
 
-### 建议的学习路径 / Suggested Learning Path
+首次使用前先设置路径并跑通自检测试；看到 `All smoke tests passed.` 即环境就绪。
 
-**阶段 A — 时间界面 / Temporal Interfaces**
-- `demos/demo05_fdtd_temporal_interface.m` — 单时间界面波分裂
-- `demos/demo11_coherent_time_interface.m` — 双输入相干控制
+---
 
-**阶段 B — 光子时间晶体 / Photonic Time Crystals**
-- `demos/demo03_ptc_bands_pwe_vs_tmm.m` — PWE 与 TMM 交叉验证
-- `demos/demo09_finite_ptc_order_and_phase.m` — 有限周期响应
-- `demos/demo12_ptc_convergence_audit.m` — 收敛审计
+## 学习路径 / Learning Path
 
-**阶段 C — 拓扑 / Topology**
-- `demos/demo10_temporal_domain_wall_mode.m` — 时间畴壁模式
+**新手从这里开始** → [learn/README.md](learn/README.md)：11 章中文教程，从 MATLAB 入门到动手研究——
 
-**阶段 D — 一般时空周期介质 / General ST Media**
-- `demos/demo01_reproduce_fig2_stpwe.m` — 论文图 2 复现
-- `demos/demo02_complex_frequency_and_momentum_gaps.m` — 复谱分析
-- `demos/demo06_fdtd_spacetime_wavepacket.m` — 波包演化
-- `demos/demo07_zak_phase_stpwe.m` — 空间 Zak 相位
-
-运行全部示例 / Run all demos:
-```matlab
-run_all_demos(false)   % 快速
-run_all_demos(true)    % 完整（含论文级精度）
-```
+> 物理背景 → 三种数值方法 → ST-PWE / 时间 TMM / FDTD 精讲 → 拓扑不变量 → 12 个 demo 导读 → 练习 → 排错。
 
 ---
 
@@ -68,12 +51,13 @@ run_all_demos(true)    % 完整（含论文级精度）
 
 | 文档 | 说明 |
 |------|------|
-| [docs/manual.md](docs/manual.md) | **完整中文用户手册** — 参数设计、能带计算、拓扑不变量、TMM/FDTD 仿真、函数索引 |
+| [learn/README.md](learn/README.md) | **教程（主入口）** — 从零上手的 11 章中文学习路径 |
 | [docs/tool-reference.md](docs/tool-reference.md) | **函数工具书** — 全部 113 个 `.m` 文件的函数签名、输入/输出参数与功能说明 |
-| [docs/conventions.md](docs/conventions.md) | **物理约定与适用域** — 时间因子符号、界面连续量、模型选择边界、常见误判 |
 | [docs/paper-map.md](docs/paper-map.md) | **文献覆盖矩阵** — 库中 20 份 PDF 与代码的逐项覆盖状态 |
 | [docs/roadmap.md](docs/roadmap.md) | **研究路线图** — 从现有代码出发的课题扩展方向 |
 | [docs/validation.md](docs/validation.md) | **Validation record** — v2 包的三层数值验证结果 (English) |
+
+---
 
 ### 核心参考论文 / References
 
