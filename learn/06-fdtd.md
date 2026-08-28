@@ -249,6 +249,7 @@ cfg.epsFun = @(xq,tq) ((tq < tSwitch)*nBefore^2 + (tq >= tSwitch)*nAfter^2) * on
 | `out.boundary` | 实际使用的边界类型 |
 | `out.storeFields` / `out.storeD` | 存储模式回显 |
 | `out.temporalInterfaces` / `out.temporalInterfaceTolerance` | 吸附到整数节点后的界面时刻 / 容差 |
+| `out.processedTemporalInterfaceCount` | 主循环实际处理的时间界面数；与配置数量不符时求解器会报错 |
 | `out.spectralFilterMask` | 频谱滤波掩码（没给就是空） |
 | `out.sampledMaxWaveSpeed` / `out.sampledCourant` | CFL 审计的最大波速 / Courant 数（非正折射率介质是 `NaN`） |
 | `out.precision` | 数值精度字符串 |

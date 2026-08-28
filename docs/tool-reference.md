@@ -1166,6 +1166,7 @@ function out = fdtd1d_db(cfg)
 | `out.boundary` | char | 使用的边界条件类型。 |
 | `out.sampledMaxWaveSpeed` | double | CFL 审计得到的最大波速（可能为 NaN）。 |
 | `out.sampledCourant` | double | CFL 审计得到的 Courant 数。 |
+| `out.processedTemporalInterfaceCount` | integer | 主循环实际执行界面中心更新的时间界面数；求解结束时必须等于已配置界面数。 |
 | `out.precision` | char | 数值精度。 |
 
 **备注：** 依赖局部辅助函数 `yee_h_to_e_grid`（见下）。物理约定：D/B 在时间界面处连续；能量密度对非色散介质为 (1/2)(E·D + H·B)，时变介质中调制度会与场交换能量、总能量一般不守恒。稳定性要求 Courant 数 S = v_max·Δt/Δx < 1（v_max = max[1/√(ε_r·μ_r)]）；对色散/负折射率/有源介质，采样审计返回 NaN 并跳过检查，需通过 `cfg.maxWaveSpeed` 手动指定。sponge 不是严格 CPML，而是简化的乘法衰减。`cfg.spectralFilterMask` 仅对 `boundary='periodic'` 且存在 temporalInterfaces 时有效。
@@ -4783,23 +4784,23 @@ function fig1d_fdtd_in_gap()
 function fig2_fdtd_simulations(forceRecompute)
 ```
 
-**简介：** 复现 Lustig et al. (2018) 的 Fig. 2——用精确 k 空间 Maxwell 传播（谱方法，替代 FDTD）展示带内传播与带隙指数放大。
+**简介：** 复现 Lustig et al. (2018) 的 Fig. 2，并从宽带实空间 Yee-FDTD 场的二维 FFT 提取时间晶体能带。
 
 **功能：**
 
-介质空间均匀，故每个空间傅里叶分量独立演化。本实现直接在 k 空间传播精确 Maxwell 态 [D;B]，再用 FFT 重构 D(z,t)，是论文 FDTD 计算的零空间离散误差谱对应物。对两个工况分别运行：带内（λ=1.4 μm）与带隙（λ=0.93 μm，预期放大）。源谱先用 `carrier_connected_zone` 定位包含载波的连通能带/带隙，将高斯脉冲的微小拖尾在该区外置零（避免 60 周期后带外 1e-6 的尾巴盖过带内脉冲）。时间界面处用 `temporal_interface_matrix_jump` 显式拆分折射/时间反射通道（D/B 连续），并构建前若干界面的相干路径树 `build_path_tree` 作诊断。最终以对数幅度 `log10(|D|/max|D(t=0)|)` 成像，并用 `temporal_finite_crystal_response` 的 TMM 结果审计增益（指出论文 60 周期与 20000 倍增益二者自相矛盾）。
+对带内（λ=1.4 μm）和带隙（λ=0.93 μm）波包，代码把物理坐标换成 `q=z/c0`，调用 `fdtd1d_db` 在实空间交错 Yee 网格上逐步更新 D/B；120 个时间界面全部与整数时间节点对齐，传播阶段不使用频谱滤波。初始解析脉冲只做一次连通 band/gap 支撑投影。另一个 24 周期宽带周期边界 FDTD 保存完整 D(q,t)，先沿空间、再沿时间做 FFT，并把相差 `2*pi/T` 的 Floquet 谐波折叠到首时间布里渊区，生成 `k/k0--Omega*T` 谱图。连续 TMM 色散仅作为叠加审计，并继续公开论文 60 周期与约 20000 倍增益不相容的问题。
 
 **输入参数：**
 
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
-| `forceRecompute` | logical（可选） | 是否强制重算两个精确 k 工况（默认 false，优先读取有效缓存） |
+| `forceRecompute` | logical（可选） | 是否强制重算两组波包 FDTD 与宽带 FFT 能带（默认 false） |
 
 **输出参数：**
 
-无（仅绘图/写文件）。保存 `output/fig2_fdtd_simulations.png`、`output/fig2_temporal_path_tree.png`、`output/fig2_audit.mat`，以及逐工况缓存 `output/fig2_inband_data.mat`、`output/fig2_ingap_data.mat`（含 `data` 结构体，字段 `D`、`logAmplitude`、`pathTree`、`interfaceAudit` 等）。
+无（仅绘图/写文件）。保存 `output/fig2_fdtd_simulations.png`、`output/fig2_fdtd_fft_band_structure.png`、`output/fig2_temporal_path_tree.png`、`output/fig2_audit.mat`，以及 `fig2_inband_data.mat`、`fig2_ingap_data.mat` 和含完整宽带场/FFT 谱的 `fig2_fdtd_fft_band_data.mat`。
 
-**备注：** 依赖 `run_or_load_case`、`propagate_spectrum`、`ptc_epsilon_scalar`、`build_path_tree`、`plot_path_tree`、`plot_case`、`carrier_connected_zone`、`floquet_group_speed`、`window_peaks`（均为本文件局部函数）以及 `temporal_db_to_directional`、`temporal_interface_matrix_jump`、`temporal_finite_crystal_response`、`temporal_crystal_bands`。关键物理参数：c0=0.299792458 μm/fs、ε_1=3、ε_2=1、T=2 fs、tStart=220 fs、tEnd=340 fs（共 60 周期）、fwhm 取栅格拟合值 35 fs（论文正文 45 fs 与栅格不一致）。
+**备注：** 依赖 `fdtd1d_db`、`temporal_interface_matrix_jump`、`temporal_finite_crystal_response` 和 `temporal_crystal_bands`。关键物理参数：c0=0.299792458 μm/fs、ε_1=3、ε_2=1、T=2 fs、tStart=220 fs、tEnd=340 fs（共 60 周期）、fwhm 取栅格拟合值 35 fs（论文正文为 45 fs）。波包网格为 8192 点、dt=0.03125 fs；能带网格为 4096 点并在 k/k0=5 处保留约 20.5 点/波长。
 
 ### `fig3_relative_phase`
 
@@ -4901,13 +4902,13 @@ function run_all_reproductions(forceFig2)
 
 **功能：**
 
-依次调用 `fig1_ptc_bands`、`fig2_fdtd_simulations(forceFig2)`、`fig4_relative_phase`、`fig5_temporal_edge_state`，逐项计时并打印进度。`forceFig2` 用于控制 Fig. 2 两个精确 k 工况是否强制重算（否则复用经验证的缓存）。所有图与数据文件写入 `output/` 目录。
+依次调用 `fig1_ptc_bands`、`fig2_fdtd_simulations(forceFig2)`、`fig4_relative_phase`、`fig5_temporal_edge_state`，逐项计时并打印进度。`forceFig2` 控制 Fig. 2 两个 Yee-FDTD 波包和宽带 FFT 能带是否强制重算（否则复用经验证的缓存）。所有图与数据文件写入 `output/` 目录。
 
 **输入参数：**
 
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
-| `forceFig2` | logical（可选） | 是否重算两个精确 k 的 Fig. 2 工况（默认 false，复用缓存） |
+| `forceFig2` | logical（可选） | 是否重算 Fig. 2 FDTD/FFT 数据（默认 false，复用缓存） |
 
 **输出参数：**
 

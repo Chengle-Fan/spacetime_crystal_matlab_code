@@ -4,6 +4,7 @@
 > 这一章我们做一件"看起来很神奇、其实很机械"的事：把"解偏微分方程"变成"解一个矩阵本征值问题"，然后让 MATLAB 替我们把能带算出来。
 >
 > 读完这一章，你应该能做到：
+>
 > 1. 从一维 Maxwell 方程出发，亲手推出 ST-PWE 的广义本征值问题 $A(k)\Phi=\omega B\Phi$；
 > 2. 说清"固定 $k$ 求 $\omega$"和"固定 $\omega$ 求 $k$"两个本征问题分别揭示哪类带隙；
 > 3. 逐行读懂 `stpwe_build_system` → `stpwe_solve_omega` → `stpwe_select_mode` → `stpwe_reconstruct_field` 这条完整管线；
@@ -86,10 +87,10 @@ $$
 
 现在对每一项取 $(m,n)$ 谐波分量。三个"动作"分别是：
 
-| 操作 | 在 Fourier 空间变成 | 说明 |
-|------|--------------------|------|
-| $\partial_x$ | 乘以 $i n g$ | 每个谐波的对角因子 |
-| $\partial_t$ | 乘以 $-i m\Omega$ | 每个谐波的对角因子 |
+| 操作                                     | 在 Fourier 空间变成                                               | 说明                           |
+| ---------------------------------------- | ----------------------------------------------------------------- | ------------------------------ |
+| $\partial_x$                           | 乘以$i n g$                                                     | 每个谐波的对角因子             |
+| $\partial_t$                           | 乘以$-i m\Omega$                                                | 每个谐波的对角因子             |
 | $\mu(\cdot)$ 或 $\varepsilon(\cdot)$ | **离散卷积** $\sum_{m',n'}\mu_{m-m',n-n'}(\cdot)_{m',n'}$ | 实空间乘积 → Fourier 空间卷积 |
 
 逐分量对齐，得到第 $(m,n)$ 个谐波的**代数方程**：
@@ -108,13 +109,13 @@ $$
 
 把 $E_{m,n}$、$H_{m,n}$ 按某种顺序排成两个 $S$ 维列向量（$S=$ 保留的谐波总数），再竖着拼成 $2S$ 维向量 $\Phi=[E;\,H]$。定义矩阵：
 
-| 符号 | 定义 | 名字 |
-|------|------|------|
-| $K$ | $kI+G=\mathrm{diag}(k+ng)$ | 空间波矢（含 $k$ 平移） |
-| $G$ | $\mathrm{diag}(ng)$ | 空间导数 |
-| $W$ | $\mathrm{diag}(m\Omega)$ | 时间导数 |
-| $C_\varepsilon,\ C_\mu$ | $C_\varepsilon(\text{row,col})=\varepsilon_{m_r-m_c,\,n_r-n_c}$ | 介电/磁导率卷积矩阵 |
-| $B$ | $\begin{bmatrix}0 & C_\mu \\ C_\varepsilon & 0\end{bmatrix}$ | 右端块矩阵 |
+| 符号                      | 定义                                                              | 名字                     |
+| ------------------------- | ----------------------------------------------------------------- | ------------------------ |
+| $K$                     | $kI+G=\mathrm{diag}(k+ng)$                                      | 空间波矢（含$k$ 平移） |
+| $G$                     | $\mathrm{diag}(ng)$                                             | 空间导数                 |
+| $W$                     | $\mathrm{diag}(m\Omega)$                                        | 时间导数                 |
+| $C_\varepsilon,\ C_\mu$ | $C_\varepsilon(\text{row,col})=\varepsilon_{m_r-m_c,\,n_r-n_c}$ | 介电/磁导率卷积矩阵      |
+| $B$                     | $\begin{bmatrix}0 & C_\mu \\ C_\varepsilon & 0\end{bmatrix}$    | 右端块矩阵               |
 
 把上面两个代数方程逐行写进矩阵（第二项移到左边、$\omega$ 留在右边），就得到
 
@@ -192,10 +193,10 @@ $$
 
 ### 2.3 一句话总结
 
-| 本征问题 | 固定量 | 本征值 | $\mathrm{Im}(\cdot)\neq 0$ 表示 | 揭示的带隙 | 求解器 |
-|---------|--------|--------|-------------------------------|-----------|--------|
-| 广义 $A\Phi=\omega B\Phi$ | $k$ | $\omega$（复频率） | 时间指数增长/衰减 | **动量带隙**（时间不稳定性） | `stpwe_solve_omega` |
-| 普通 $A'\Phi=k\Phi$ | $\omega$ | $k$（复波矢） | 空间倏逝 | **频率带隙**（空间禁带） | `stpwe_solve_k` |
+| 本征问题                   | 固定量     | 本征值               | $\mathrm{Im}(\cdot)\neq 0$ 表示 | 揭示的带隙                         | 求解器                |
+| -------------------------- | ---------- | -------------------- | --------------------------------- | ---------------------------------- | --------------------- |
+| 广义$A\Phi=\omega B\Phi$ | $k$      | $\omega$（复频率） | 时间指数增长/衰减                 | **动量带隙**（时间不稳定性） | `stpwe_solve_omega` |
+| 普通$A'\Phi=k\Phi$       | $\omega$ | $k$（复波矢）      | 空间倏逝                          | **频率带隙**（空间禁带）     | `stpwe_solve_k`     |
 
 > 💡 一句话记忆：**固定 $k$ 看到"时间的带隙"，固定 $\omega$ 看到"空间的带隙"。** 二者不能互换：前者是时间不稳定性，后者是空间倏逝，物理完全不同。`demos/demo02_complex_frequency_and_momentum_gaps.m` 把两条路线画在同一套介质上，值得跑一遍。
 
@@ -249,17 +250,17 @@ end
 
 **第 29–42 行：打包 `sys` 结构体。** 字段一览：
 
-| 字段 | 大小 | 含义 |
-|------|------|------|
-| `sys.Nspace`, `sys.Mtime` | 标量 | 截断阶数 |
-| `sys.nList`, `sys.mList` | $S\times 1$ | 每个谐波的 $(n,m)$ 索引（列主序） |
-| `sys.S` | 标量 | 谐波总数 |
-| `sys.g`, `sys.Omega` | 标量 | 倒格矢与调制频率 |
-| `sys.Ceps`, `sys.Cmu` | $S\times S$ | 介电/磁导率卷积矩阵 |
-| `sys.G` | $S\times S$ | $\mathrm{diag}(n\, g)$，空间导数 |
-| `sys.W` | $S\times S$ | $\mathrm{diag}(m\,\Omega)$，时间导数 |
-| `sys.I`, `sys.Z` | $S\times S$ | 单位阵、零阵 |
-| `sys.Bomega` | $2S\times 2S$ | $[Z, C_\mu;\, C_\varepsilon, Z]$，即 $B$ |
+| 字段                          | 大小            | 含义                                         |
+| ----------------------------- | --------------- | -------------------------------------------- |
+| `sys.Nspace`, `sys.Mtime` | 标量            | 截断阶数                                     |
+| `sys.nList`, `sys.mList`  | $S\times 1$   | 每个谐波的$(n,m)$ 索引（列主序）           |
+| `sys.S`                     | 标量            | 谐波总数                                     |
+| `sys.g`, `sys.Omega`      | 标量            | 倒格矢与调制频率                             |
+| `sys.Ceps`, `sys.Cmu`     | $S\times S$   | 介电/磁导率卷积矩阵                          |
+| `sys.G`                     | $S\times S$   | $\mathrm{diag}(n\, g)$，空间导数           |
+| `sys.W`                     | $S\times S$   | $\mathrm{diag}(m\,\Omega)$，时间导数       |
+| `sys.I`, `sys.Z`          | $S\times S$   | 单位阵、零阵                                 |
+| `sys.Bomega`                | $2S\times 2S$ | $[Z, C_\mu;\, C_\varepsilon, Z]$，即 $B$ |
 
 第 38–42 行把它们一个个写进 `sys`，其中：
 
@@ -311,13 +312,13 @@ $$
 
 **第 40–46 行：输出 `sol` 结构体。**
 
-| 字段 | 含义 |
-|------|------|
-| `sol.k` | 输入的波矢 |
-| `sol.omega` | $2S\times 1$，全部本征值（复频率） |
-| `sol.R`, `sol.L` | 左右本征向量矩阵（已双正交归一化） |
-| `sol.A`, `sol.B` | 组装的矩阵（排错时有用） |
-| `sol.m0Weight` | $2S\times 1$，每个本征值的 m=0 参与度 |
+| 字段                 | 含义                                    |
+| -------------------- | --------------------------------------- |
+| `sol.k`            | 输入的波矢                              |
+| `sol.omega`        | $2S\times 1$，全部本征值（复频率）    |
+| `sol.R`, `sol.L` | 左右本征向量矩阵（已双正交归一化）      |
+| `sol.A`, `sol.B` | 组装的矩阵（排错时有用）                |
+| `sol.m0Weight`     | $2S\times 1$，每个本征值的 m=0 参与度 |
 
 > ⚠️ **本征值排序不稳定。** `eig` 不保证本征值的顺序在相邻 $k$ 之间连续——所以不能"第一个本征值就是第一能带"。这正是 `stpwe_select_mode` 存在的理由。
 
@@ -340,14 +341,14 @@ k = diag(D);
 
 **行/列结构与 `solve_omega` 的对应关系：**
 
-| 位置 | `solve_omega`（固定 $k$） | `solve_k`（固定 $\omega$） |
-|------|--------------------------|----------------------------|
-| 矩阵左上块 | $K=kI+G$ | $-G$ |
-| 矩阵对角上的变量 | $k$（在 $K$ 里） | $\omega$（在 `OW` 里） |
-| 本征值 | $\omega$ | $k$ |
-| 右端矩阵 | $B=[0,C_\mu;C_\varepsilon,0]$ | 无（单位阵） |
-| 归一化 | $L'BR=I$ | $L'R=I$ |
-| 返回字段 | 有 `B`、`m0Weight` | **没有** `B`、`m0Weight` |
+| 位置             | `solve_omega`（固定 $k$）   | `solve_k`（固定 $\omega$）     |
+| ---------------- | ------------------------------- | ---------------------------------- |
+| 矩阵左上块       | $K=kI+G$                      | $-G$                             |
+| 矩阵对角上的变量 | $k$（在 $K$ 里）            | $\omega$（在 `OW` 里）         |
+| 本征值           | $\omega$                      | $k$                              |
+| 右端矩阵         | $B=[0,C_\mu;C_\varepsilon,0]$ | 无（单位阵）                       |
+| 归一化           | $L'BR=I$                      | $L'R=I$                          |
+| 返回字段         | 有`B`、`m0Weight`           | **没有** `B`、`m0Weight` |
 
 > ⚠️ 用 `solve_k` 的结果画图时，`sol` 里没有 `nList`/`mList`——需要自己用 `sys.nList`、`sys.mList` 补。这是两个求解器返回结构体不同最容易踩的坑。
 
@@ -422,12 +423,12 @@ field = real(carrier.*periodicPart);
 
 ### 3.6 辅助件一览
 
-| 函数 | 一句话用途 |
-|------|-----------|
-| `stpwe_static_bands` | 关掉时间调制（$m=0$ 系数）后算**静态光子能带**，当背景参照线 |
-| `stpwe_fold_frequency` | 把 $\mathrm{Re}\,\omega$ 折进 $[-\Omega/2,\Omega/2)$，虚部保留，用于可视化 Floquet 副本 |
-| `stpwe_sample_fourier_coefficients` | 对任意 $\varepsilon(x,t)$ 数值采样 Fourier 系数，得到系数表 |
-| `stpwe_lookup_coefficient` | 从系数表查 $(m,n)$ 系数，越界补零 |
+| 函数                                  | 一句话用途                                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `stpwe_static_bands`                | 关掉时间调制（$m=0$ 系数）后算**静态光子能带**，当背景参照线                       |
+| `stpwe_fold_frequency`              | 把$\mathrm{Re}\,\omega$ 折进 $[-\Omega/2,\Omega/2)$，虚部保留，用于可视化 Floquet 副本 |
+| `stpwe_sample_fourier_coefficients` | 对任意$\varepsilon(x,t)$ 数值采样 Fourier 系数，得到系数表                               |
+| `stpwe_lookup_coefficient`          | 从系数表查$(m,n)$ 系数，越界补零                                                         |
 
 查表用的标准搭配（若你的介质写不出解析系数）：
 
@@ -539,11 +540,11 @@ S=(2N_{\text{space}}+1)(2M_{\text{time}}+1),
 \qquad \text{本征矩阵 } 2S\times 2S.
 $$
 
-| 截断 | $S$ | 本征矩阵 |
-|------|-----|---------|
-| `Nspace=10, Mtime=1`（quick） | $21\times 3=63$ | $126\times 126$ |
+| 截断                            | $S$              | 本征矩阵          |
+| ------------------------------- | ------------------ | ----------------- |
+| `Nspace=10, Mtime=1`（quick） | $21\times 3=63$  | $126\times 126$ |
 | `Nspace=20, Mtime=1`（paper） | $41\times 3=123$ | $246\times 246$ |
-| `Nspace=20, Mtime=2` | $41\times 5=205$ | $410\times 410$ |
+| `Nspace=20, Mtime=2`          | $41\times 5=205$ | $410\times 410$ |
 
 `eig` 对稠密矩阵的开销约是矩阵阶数的三次方量级，所以**矩阵维数按乘积增长，代价上升非常快**：把 `Nspace` 从 10 加到 20，矩阵从 126 到 246，单次 `eig` 大约贵 $ (246/126)^3\approx 7$ 倍。这不是写错代码，是方法本身的性质——所以"够用就好"。
 
@@ -574,15 +575,15 @@ $$
 
 ## 本章速查
 
-| 你想干什么 | 用什么 |
-|-----------|--------|
-| 组装卷积矩阵系统 | `stpwe_build_system(epsCoeff, [], Nspace, Mtime, g, Omega)` |
-| 固定 $k$ 求复 $\omega$（动量带隙） | `stpwe_solve_omega(sys, k)` |
-| 固定 $\omega$ 求复 $k$（频率带隙） | `stpwe_solve_k(sys, omega)` |
-| 在目标点挑一个干净模式 | `stpwe_select_mode(sys, kT, omegaT, omegaWindow)` |
-| 把模式重构成电场图 | `stpwe_reconstruct_field(mode, x, t, includeGrowth)` |
-| 静态参照能带 | `stpwe_static_bands(kValues, epsCoeff0, Nspace, g, c0, nBands)` |
-| 任意材料的数值 Fourier 系数 | `stpwe_sample_fourier_coefficients` + `stpwe_lookup_coefficient` |
+| 你想干什么                            | 用什么                                                               |
+| ------------------------------------- | -------------------------------------------------------------------- |
+| 组装卷积矩阵系统                      | `stpwe_build_system(epsCoeff, [], Nspace, Mtime, g, Omega)`        |
+| 固定$k$ 求复 $\omega$（动量带隙） | `stpwe_solve_omega(sys, k)`                                        |
+| 固定$\omega$ 求复 $k$（频率带隙） | `stpwe_solve_k(sys, omega)`                                        |
+| 在目标点挑一个干净模式                | `stpwe_select_mode(sys, kT, omegaT, omegaWindow)`                  |
+| 把模式重构成电场图                    | `stpwe_reconstruct_field(mode, x, t, includeGrowth)`               |
+| 静态参照能带                          | `stpwe_static_bands(kValues, epsCoeff0, Nspace, g, c0, nBands)`    |
+| 任意材料的数值 Fourier 系数           | `stpwe_sample_fourier_coefficients` + `stpwe_lookup_coefficient` |
 
 **一句话记住整章**：把 $\varepsilon(x,t)$ 和场展开成双 Fourier 级数，代入 1D Maxwell，乘积变卷积、求导变对角阵，于是 $k$ 当参数得到 $A(k)\Phi=\omega B\Phi$；$\omega$ 当参数得到 $A'(\omega)\Phi=k\Phi$。前者看动量带隙，后者看频率带隙。
 

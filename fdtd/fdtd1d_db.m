@@ -178,6 +178,7 @@ function out = fdtd1d_db(cfg)
 %   out.boundary        - 使用的边界条件类型
 %   out.sampledMaxWaveSpeed - CFL 审计得到的最大波速
 %   out.sampledCourant  - CFL 审计的 Courant 数
+%   out.processedTemporalInterfaceCount - 主循环实际处理的时间界面数
 
 %==========================================================================
 % 第 1 部分: 空间网格验证
@@ -683,6 +684,7 @@ if showProgress
     ticProg = tic;
 end
 
+processedTemporalInterfaceCount = 0;
 for step = 1:nSteps
     % =====================================================================
     % 步骤 A: 法拉第定律 —— 更新 B（从 n-1/2 到 n+1/2）
@@ -692,6 +694,8 @@ for step = 1:nSteps
 
     temporalInterfaceId = temporalInterfaceIdByStep(step);
     if temporalInterfaceId ~= 0
+        processedTemporalInterfaceCount = ...
+            processedTemporalInterfaceCount+1;
         tInterface = temporalInterfaces(double(temporalInterfaceId));
         epsBefore = cfg.epsFun(x,tInterface-temporalInterfaceSideOffset);
         epsAfter = cfg.epsFun(x,tInterface+temporalInterfaceSideOffset);
@@ -830,6 +834,12 @@ for step = 1:nSteps
     end
 end
 
+if processedTemporalInterfaceCount ~= numel(temporalInterfaces)
+    error(['Processed %d temporal interfaces, but %d aligned interfaces ' ...
+        'were configured.'],processedTemporalInterfaceCount, ...
+        numel(temporalInterfaces));
+end
+
 % --- 关闭进度条 ---
 if showProgress
     totalTime = toc(ticProg);
@@ -861,6 +871,7 @@ out.boundary = boundary;            % 边界条件类型
 out.storeFields = storeFields;      % 场存储模式
 out.storeD = storeD;                % D 历史存储模式
 out.temporalInterfaces = temporalInterfaces;
+out.processedTemporalInterfaceCount = processedTemporalInterfaceCount;
 out.temporalInterfaceTolerance = temporalInterfaceTolerance;
 out.spectralFilterMask = spectralFilterMask;
 out.sampledMaxWaveSpeed = sampledMaxWaveSpeed;  % CFL 审计波速
