@@ -10,9 +10,8 @@ sldemo_*
 coderepo/
 _*
 
-# Outputs
+# Generated output (only created by the doSave guards in the entry scripts)
 output/
-!output/.gitkeep
 
 # System
 *.swp

@@ -1,4 +1,7 @@
-2.0.0
+3.0.0
 
-Research-oriented review against the 20-file Photonic space-time crystal
-reference collection. See VALIDATION.md for verified scope and limitations.
+V3 (breaking) rewrite of the spacetime-crystal MATLAB package.
+1D, scalar, non-dispersive media in normalized units (c0 = eps0 = mu0 = 1,
+mu_r = 1). Three flat entry scripts at the repo root — run_pwe, run_tmm,
+run_fdtd — with no path setup (no addpath, no startup file). Legacy code is
+recoverable from the git tag legacy-pre-v3-refactor.
