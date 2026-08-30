@@ -12,7 +12,7 @@ A MATLAB toolkit for 1D scalar photonic spacetime crystals: plane-wave expansion
 |------|------|------|
 | `run_pwe.m` | 平面波展开 (PWE) | 一般时空晶体 ε(x,t) 的双折叠布里渊区能带；二元时间晶体 PWE/TMM 交叉验证 |
 | `run_tmm.m` | 时间传输矩阵法 (TMM) | 二元时间晶体的精确 Floquet 能带、动量带隙与增长/衰减分支 |
-| `run_fdtd.m` | 时域有限差分 (FDTD) | 波包演化 + 宽带 FDTD-FFT 能带（对 TMM 基准）；一般时空晶体的双重折叠谱 |
+| `run_fdtd.m` | 时域有限差分 (FDTD) | 波包演化 + 有限样品 E-FFT 能带（对 TMM 基准，含 1/L 收敛与无样品参考）；一般时空晶体的双重折叠谱 |
 
 在仓库根目录直接运行：
 
@@ -48,9 +48,10 @@ run_fdtd     % FDTD：波包、宽带 FFT 能带、双重折叠谱
 
 ## 版本与旧版恢复 / Version & Legacy
 
-- 当前版本 **3.0.0**（见 `VERSION.txt`）。V3 为破坏性重构：旧目录（`core/`、`tmm/`、`fdtd/`、`topology/`、`demos/`、`examples/`、`tests/`、`learn/`、`docs/`、`reproduction/`、`Simple_FDTD_NathanZechar/`、`output/`）与旧根入口（`startup_stm.m`、`stm_init.m`、`run_all_demos.m`、`stm_run_examples.m`）均已移除。
+- 当前版本 **3.0.1**（见 `VERSION.txt`）。3.0.1 修复 V3.0 验收问题（详见 `repair.md`）：`run_fdtd` 的 Case B 现在是真正的有限样品基准——在样品内部测量 ROI 内对 **E(x,t)** 做 2-D FFT，其功率脊线与精确 TMM 通带交叉验证（Method A 脊线），并辅以无样品参考（入射 k/Ω 覆盖与海绵残余背散射的量化）以及三个样品长度在公共有符号 k 网格上的 1/L 脊线外推。预注册脊线容差（由折叠网格量化间隔导出，**不是**旧周期 0.10/0.30）为验收门，外推到 L→∞ 的残差同样对该容差断言。默认出货的是**扩增 ROI（样品内每侧固定 10 个格点的窗口，ROI 随样品长度 L 增长，约占样品 98–99%）**类；**固定中心 ROI** 类——中心短 ROI 无法把体平面波模式与样品-背景杂散模式分离，属**如实记录的物理预期失败**，不作验收门——连同两组记录时长、两类 ROI/窗函数、dx/dt 网格收敛与 Case C 对 PWE 的定量对照，按仓库扁平结构约定放入一次性回归脚本（存于 `/tmp`，不入库）执行，并在控制台与本文件如实披露，不掩盖。这是 3.0.1 中**唯一的定量验收门**。Case A（波包）与 Case C（双重折叠谱）为展示用途，在 3.0.1 中不作定量验收，其原生分辨率在控制台如实报告。Case B 采用弱对比 ε(t)=1.3↔1：强对比二元时间晶体会打开动量带隙，其参数增长 Im(ω)·T 在有限时间窗谱中先于能带解析而主导谱——这是如实记录的物理限制，而非被掩盖的效应。
+- V3 为破坏性重构：旧目录（`core/`、`tmm/`、`fdtd/`、`topology/`、`demos/`、`examples/`、`tests/`、`learn/`、`docs/`、`reproduction/`、`Simple_FDTD_NathanZechar/`、`output/`）与旧根入口（`startup_stm.m`、`stm_init.m`、`run_all_demos.m`、`stm_run_examples.m`）均已移除。
 - 旧版全部代码可从 git 标签 **`legacy-pre-v3-refactor`** 恢复。
-- 最小环境：**MATLAB R2020a+**（Base MATLAB，无 Toolbox 依赖）。
+- 最小环境：**MATLAB R2020a+**（Base MATLAB，无 Toolbox 依赖）。三个入口脚本从仓库根目录直接完成，无 `addpath`/startup 依赖；本次 3.0.1 实测于 **R2026a**，R2020a 为声明下限（本机未安装，未实测）。所用 API（`tiledlayout`/`nexttile` 为 R2019b+，`exportgraphics` 为 R2020a，带 `print` 回退）均满足 R2020a。
 
 ## 参考文献 / References
 

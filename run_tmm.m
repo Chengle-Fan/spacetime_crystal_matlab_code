@@ -10,7 +10,10 @@
 % log, Re(omega) in the first temporal Brillouin zone). A momentum gap is
 % where |trace(U)/2| > 1, i.e. omega picks up an imaginary part.
 %
-% Plan: 定义材料 -> 周期/截断参数 -> 计算 -> 作图
+% Plan: 定义材料 -> 周期/截断参数 -> 均匀介质解析检验 -> 计算 -> 作图
+%
+% A uniform-medium analytic check (omega = k/sqrt(eps*mu), no gap) is
+% asserted before the main computation (acceptance repair.md 7.308).
 %
 % Results remain in the workspace; by default nothing is written to disk.
 % Set doSave = true (end of file) to export the figure to a local dir.
@@ -23,9 +26,9 @@ epsLayers = [1 4];          % permittivity of each temporal layer
 muLayers  = 1;              % permeability (scalar -> broadcast to all layers)
 durations = [0.5 0.5];      % duration of each layer (arbitrary units)
 
-% Uniform-medium sanity check (index n = 1.5): no momentum gap expected.
-%   epsLayers = [2.25 2.25];
-%   durations = [0.5 0.5];
+% A uniform-medium analytic check (omega = k/sqrt(eps*mu), no momentum gap)
+% runs below as a separate self-contained block; it does not alter the demo
+% material configured above.
 
 %% ================= 周期 / 截断参数 (period & scan) ========================
 T     = sum(durations);     % total modulation period
@@ -33,6 +36,27 @@ Omega = 2*pi/T;             % temporal modulation frequency
 
 kNorm   = linspace(0, 1.5, 301);   % normalized wavenumber k/Omega (c0 = 1)
 kValues = kNorm*(2*pi/T);          % physical wavenumbers k = kNorm*Omega
+
+%% ================== 均匀介质解析检验 (uniform-medium check) =================
+% Acceptance repair.md 7.308: for eps = const, mu = 1, the TMM monodromy
+% must recover the folded dispersion omega = k/sqrt(eps*mu) to machine
+% precision (no momentum gap). Two identical half-period layers of a
+% uniform medium are exactly equivalent to one uniform period.
+epsU   = 2.25;  nU = sqrt(epsU);
+kNormU = linspace(0, 1.2, 101);                 % normalized scan, same as PWE check
+kU     = kNormU*Omega;
+wExact = mod(kU/nU + Omega/2, Omega) - Omega/2; % analytic Re(omega), folded into [-Omega/2, Omega/2]
+bandsU = tmm_bands(kU, [epsU epsU], 1, [T/2 T/2]);
+dU     = mod(real(bandsU.omega) - wExact + Omega/2, Omega) - Omega/2;   % wrap onto period-Omega circle
+minErrU = min(abs(dU), [], 1)/Omega;            % nearest branch, like the PWE-vs-TMM comparison
+maxErrU = max(minErrU);
+uniformTol = 1e-6;
+assert(maxErrU <= uniformTol, ...
+    ['TMM uniform-medium recovery max |Delta Re(omega)|/Omega = %.3e exceeds %.1e ', ...
+    '(acceptance 7.308); monodromy does not return omega = k/sqrt(eps*mu).'], ...
+    maxErrU, uniformTol);
+fprintf('TMM uniform-medium analytic check: max |Delta Re(omega)|/Omega = %.3e (<= %.1e) PASSED\n', ...
+    maxErrU, uniformTol);
 
 %% ============================ 计算 (compute) =============================
 result = tmm_bands(kValues, epsLayers, muLayers, durations);
@@ -102,7 +126,7 @@ yl3 = [min([real(halfTr), -1]) - 0.2, max([real(halfTr), 1]) + 0.2];
 ylim(ax3, yl3);
 grid(ax3,'on'); box(ax3,'on');
 
-sgtitle(tl, sprintf('Binary photonic time crystal  \\epsilon = [%s],  T = %.2f', ...
+title(tl, sprintf('Binary photonic time crystal  \\epsilon = [%s],  T = %.2f', ...
     num2str(epsLayers,'%.3g '), T));
 
 drawnow;
@@ -126,6 +150,7 @@ else
     maxImOverOmega = 0;
     fprintf('  (no momentum gap in the scanned k-range)\n');
 end
+fprintf('Base MATLAB only (no Toolbox); declared minimum R2020a (untested on this machine), verified R2026a.\n');
 fprintf('============================================================\n');
 
 %% ====================== 可选保存 (optional save) =========================
