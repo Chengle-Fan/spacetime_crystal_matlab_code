@@ -1,163 +1,91 @@
-function result = tmm_bands(kValues, epsLayers, muLayers, durations)
-%TMM_BANDS Floquet quasifrequencies of a piecewise-constant temporal crystal.
+function result = tmm_bands(kScan, epsLayers, muLayers, durations)
+%TMM_BANDS Complex quasifrequency bands of a square-wave time crystal.
 %
-% Continuous [D;B] state, single-period monodromy, Floquet quasifrequencies.
+% The two temporal layers are spatially uniform, lossless and nondispersive.
+% At each instantaneous time interface, D and B are continuous. Within one
+% layer the state follows
 %
-% For a plane wave exp(i*k*x) propagating through layers that are constant in
-% space but switch in time, the D/B state evolves by
-%     d/dt [D;B] = -i*k*[0 1/mu; 1/eps 0]*[D;B]
-% within each layer. D and B are continuous at every time interface, so the
-% one-period evolution is a product of layer exponentials (no separate
-% interface matrix is needed). If U is the one-period monodromy with
-% eigenvalues lambda, the Floquet quasifrequencies are
-%     omega = i*log(lambda)/T,
-% whose principal logarithm places Re(omega) in the first temporal Brillouin
-% zone. The gap condition is |trace(U)/2| > 1, so that omega acquires a
-% nonzero imaginary part.
+%   d/dt [D;B] = -i*k*[0 1/mu; 1/eps 0]*[D;B].
 %
-% Scope: scalar, non-dispersive, lossless media in normalized units.
-%   kValues are real (complex k, e.g. for damped continua, is not supported by
-%   the real half-trace gap criterion). eps/mu must be finite and nonzero
-%   real scalars/layers. This method applies only to space-uniform,
-%   piecewise-constant, instantaneously switched eps(t) with continuous D/B
-%   at each time interface.
+% The eigenvalues lambda of the one-period 2-by-2 evolution matrix give
+% omega=i*log(lambda)/T. The principal logarithm places Re(omega) in the
+% first temporal Floquet zone.
 %
 % INPUTS
-%   kValues   : nonempty vector of conserved real wavenumbers (row output).
-%   epsLayers : row/column vector, length M >= 1 (permittivity per layer).
-%   muLayers  : scalar (broadcast to M layers) or length-M vector.
-%   durations : row/column vector, length M >= 1 (duration of each layer;
-%               each entry finite nonnegative real, total T = sum > 0).
+%   kScan     : nonempty vector of finite real wavenumbers
+%   epsLayers : [eps1 eps2], finite and strictly positive
+%   muLayers  : positive scalar or [mu1 mu2]
+%   durations : [dt1 dt2], finite and strictly positive
 %
-% OUTPUT (struct)
-%   result.k          : 1 x nK row of wavenumbers.
-%   result.U          : 2 x 2 x nK one-period D/B monodromy per wavenumber
-%                       (layer 1 applied first).
-%   result.omega      : 2 x nK complex quasifrequencies, rows sorted by
-%                       [real(omega), imag(omega)] (omega(1,:) <= omega(2,:)).
-%   result.lambda     : 2 x nK monodromy eigenvalues (same row order).
-%   result.halfTrace  : 1 x nK complex trace(U)/2.
-%   result.gapMask    : 1 x nK logical, true where |real(halfTrace)| > 1
-%                       (with a 1e-12 safety margin, see below).
-%   result.T          : total period T = sum(durations).
-%   result.Omega      : temporal frequency 2*pi/T.
-%   result.epsLayers  : 1 x M permittivity layers.
-%   result.muLayers   : 1 x M permeability layers.
-%   result.durations  : 1 x M layer durations.
+% OUTPUT
+%   result.k     : 1 x nK scan vector
+%   result.omega : 2 x nK complex quasifrequencies
 
-%==========================================================================
-% Input validation (no NaN/Inf or silently-empty pseudo-results)
-%==========================================================================
-if nargin < 4
-    error('tmm_bands requires kValues, epsLayers, muLayers, and durations.');
+if nargin ~= 4
+    error('Use tmm_bands(kScan,epsLayers,muLayers,durations).');
+end
+if ~isnumeric(kScan) || isempty(kScan) || ~isvector(kScan) || ...
+        ~isreal(kScan) || any(~isfinite(kScan))
+    error('kScan must be a nonempty vector of finite real wavenumbers.');
+end
+if ~isnumeric(epsLayers) || ~isvector(epsLayers) || numel(epsLayers) ~= 2 || ...
+        ~isreal(epsLayers) || any(~isfinite(epsLayers)) || any(epsLayers <= 0)
+    error('epsLayers must contain two finite, real, strictly positive values.');
+end
+if ~isnumeric(muLayers) || ~isvector(muLayers) || ...
+        ~(isscalar(muLayers) || numel(muLayers) == 2) || ...
+        ~isreal(muLayers) || any(~isfinite(muLayers)) || any(muLayers <= 0)
+    error('muLayers must be one or two finite, real, strictly positive values.');
+end
+if ~isnumeric(durations) || ~isvector(durations) || numel(durations) ~= 2 || ...
+        ~isreal(durations) || any(~isfinite(durations)) || any(durations <= 0)
+    error('durations must contain two finite, real, strictly positive values.');
 end
 
-kValues = kValues(:).';
-if isempty(kValues)
-    error('kValues must be a nonempty vector of real wavenumbers.');
-end
-if any(~isreal(kValues)) || any(~isfinite(kValues))
-    error('kValues must contain only finite real wavenumbers.');
-end
-
+kScan = kScan(:).';
 epsLayers = epsLayers(:).';
-muLayers  = muLayers(:).';
 durations = durations(:).';
-
-M = numel(epsLayers);
-if M < 1 || numel(muLayers) ~= 1 && numel(muLayers) ~= M || numel(durations) ~= M
-    error(['epsLayers and durations must have equal, nonempty lengths, and ', ...
-        'muLayers must be a scalar or match that length.']);
-end
-
-% eps/mu: finite real nonzero (lossless, non-singular constitutive response).
-if any(~isreal(epsLayers)) || any(~isfinite(epsLayers)) || any(epsLayers == 0)
-    error('epsLayers must be finite real nonzero values.');
-end
-if any(~isreal(muLayers)) || any(~isfinite(muLayers)) || any(muLayers == 0)
-    error('muLayers must be finite real nonzero values.');
-end
-
-% Durations: finite nonnegative real, total period strictly positive.
-if any(~isreal(durations)) || any(~isfinite(durations)) || any(durations < 0)
-    error('durations must be finite nonnegative real values.');
+if isscalar(muLayers)
+    muLayers = [muLayers muLayers];
+else
+    muLayers = muLayers(:).';
 end
 T = sum(durations);
-if ~(T > 0)
-    error('The total modulation period T = sum(durations) must be positive.');
-end
+omega = complex(zeros(2,numel(kScan)));
 
-% Broadcast a scalar permeability to the M layers (validated above: either
-% scalar or already length M), so the layer loop can index muLayers(m).
-if isscalar(muLayers)
-    muLayers = muLayers * ones(1, M);
-end
-Omega = 2*pi/T;
-
-%==========================================================================
-% Scan: single-period D/B monodromy and its Floquet eigenvalues
-%==========================================================================
-nK = numel(kValues);
-Uall = complex(zeros(2, 2, nK));
-omega = complex(zeros(2, nK));
-lambda = complex(zeros(2, nK));
-halfTrace = complex(zeros(1, nK));
-gapMask = false(1, nK);
-
-for ik = 1:nK
-    % Single-period D/B monodromy (layer 1 applied first). Never raise U to
-    % high powers: only the one-period U and its roots are used, avoiding
-    % overflow in strong-gain regimes.
+for ik = 1:numel(kScan)
     U = eye(2);
-    for m = 1:M
-        generator = -1i*kValues(ik)*[0, 1/muLayers(m); 1/epsLayers(m), 0];
-        U = expm(generator*durations(m))*U;
+    for layer = 1:2
+        epsr = epsLayers(layer);
+        mur = muLayers(layer);
+        theta = kScan(ik)*durations(layer)/sqrt(epsr*mur);
+        c = cos(theta);
+        s = sin(theta);
+
+        % Exact layer propagator for the continuous [D;B] state.
+        P = [c, -1i*s*sqrt(epsr/mur); ...
+             -1i*s*sqrt(mur/epsr), c];
+        U = P*U;
     end
-    Uall(:, :, ik) = U;
 
-    % Robust 2x2 eigenvalue pair: closed-form quadratic plus the reciprocal
-    % relation det(U) = lambda1*lambda2. Direct eig(U) can round the small
-    % root of a strongly gainful unitary monodromy to ~0; the product
-    % relation recovers it from the other root with full relative precision.
-    % The two names lam1/lam2 are neutral: which one carries the larger
-    % magnitude flips at tr < -2 (both roots real negative), and the rows
-    % are sorted below anyway.
-    tr  = U(1,1) + U(2,2);
-    det = U(1,1)*U(2,2) - U(1,2)*U(2,1);
-    if ~isfinite(tr) || ~isfinite(det)
-        error(['Monodromy at k = %.16g is not finite (unstable/overflow). ', ...
-            'Reduce the scan range or layer durations.'], kValues(ik));
+    halfTrace = (U(1,1)+U(2,2))/2;
+    determinant = U(1,1)*U(2,2)-U(1,2)*U(2,1);
+    root = sqrt(halfTrace^2-determinant);
+    candidates = [halfTrace+root, halfTrace-root];
+    [~,largeIndex] = max(abs(candidates));
+    lambdaLarge = candidates(largeIndex);
+    if ~isfinite(lambdaLarge) || lambdaLarge == 0 || ...
+            ~isfinite(determinant) || determinant == 0
+        error('The one-period evolution is singular or non-finite at k=%.16g.', ...
+            kScan(ik));
     end
-    s = sqrt(tr*tr - 4*det);
-    lam1 = 0.5*(tr + s);
-    lam2 = det/lam1;              % keeps lam1*lam2 == det exactly
+    lambdaSmall = determinant/lambdaLarge;
 
-    w1 = 1i*log(lam1)/T;
-    w2 = 1i*log(lam2)/T;
-    [~, order] = sortrows([real(w1), imag(w1);
-                           real(w2), imag(w2)], [1 2]);
-    wPair = [w1; w2];
-    lPair = [lam1; lam2];
-    omega(:, ik) = wPair(order);
-    lambda(:, ik) = lPair(order);
-
-    halfTrace(ik) = tr/2;
-    % Gap criterion |real(tr/2)| > 1 with a 1e-12 safety margin: a monodromy
-    % computed in floating point can land epsilon above 1 right AT a passband
-    % edge (where |real(halfTrace)| = 1 exactly), which would otherwise flip
-    % that single column to an in-gap (spurious-gap) classification.
-    gapMask(ik) = abs(real(halfTrace(ik))) > 1 + 1e-12;
+    pair = 1i*log([lambdaLarge;lambdaSmall])/T;
+    [~,order] = sortrows([real(pair),imag(pair)],[1 2]);
+    omega(:,ik) = pair(order);
 end
 
-result.k = kValues;
-result.U = Uall;
+result.k = kScan;
 result.omega = omega;
-result.lambda = lambda;
-result.halfTrace = halfTrace;
-result.gapMask = gapMask;
-result.T = T;
-result.Omega = Omega;
-result.epsLayers = epsLayers;
-result.muLayers = muLayers;
-result.durations = durations;
 end

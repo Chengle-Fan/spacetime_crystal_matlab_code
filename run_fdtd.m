@@ -769,9 +769,8 @@ kSelB = (abs(kN_B) <= c.maxKNormB) & bandsB.activeKMask(:).';
 kValuesB = kN_B(kSelB)*Omega;
 tmmB = tmm_bands(kValuesB, [epsScalar(0) epsScalar(Tper/2)], 1, ...
     [Tper/2 Tper/2]);
-halfTraceB = real(tmmB.halfTrace);
-passbandB = abs(halfTraceB) <= 1 + 1e-9;
-exactOmegaTB = acos(min(1, max(-1, halfTraceB)));    % in [0, pi]
+passbandB = max(abs(imag(tmmB.omega)),[],1) <= 1e-9/Tper;
+exactOmegaTB = max(abs(real(tmmB.omega)),[],1)*Tper; % in [0, pi]
 
 % Method A ridge: max-power bin over ALL omega*T per active column.
 ridgeA = nan(1, numel(kN_B));
@@ -906,9 +905,8 @@ end
 % Exact TMM passband on the common grid: the ridge error is only defined in
 % the passband, and interp1's 'linear' would otherwise bridge across a
 % momentum gap. The modulation is identical across samples, so one TMM call.
-halfTraceC = real(tmm_bands(commonK*Omega, [epsHi epsLo], 1, ...
-    [Tper/2 Tper/2]).halfTrace);
-passbandCommon = abs(halfTraceC) <= 1 + 1e-9;
+tmmCommon = tmm_bands(commonK*Omega, [epsHi epsLo], 1, [Tper/2 Tper/2]);
+passbandCommon = max(abs(imag(tmmCommon.omega)),[],1) <= 1e-9/Tper;
 good = all(spanK, 1) & all(isfinite(eInterp), 1) & passbandCommon(:).';
 invL = (1./sampleLengthsB(:));
 a1L = nan(1, numel(commonK)); b1L = nan(1, numel(commonK));

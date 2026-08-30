@@ -10,19 +10,19 @@ A MATLAB toolkit for 1D scalar photonic spacetime crystals: plane-wave expansion
 
 | 脚本 | 方法 | 内容 |
 |------|------|------|
-| `run_pwe.m` | 平面波展开 (PWE) | 一般时空晶体 ε(x,t) 的双折叠布里渊区能带；二元时间晶体 PWE/TMM 交叉验证 |
-| `run_tmm.m` | 时间传输矩阵法 (TMM) | 二元时间晶体的精确 Floquet 能带、动量带隙与增长/衰减分支 |
+| `run_pwe.m` | 平面波展开 (PWE) | 可选方波/正弦调制的空间均匀时间晶体；只绘制复准频率的实部与虚部 |
+| `run_tmm.m` | 时间传输矩阵法 (TMM) | 两层方波时间晶体；只绘制复准频率的实部与虚部 |
 | `run_fdtd.m` | 时域有限差分 (FDTD) | 波包演化 + 有限样品 E-FFT 能带（对 TMM 基准，含 1/L 收敛与无样品参考）；一般时空晶体的双重折叠谱 |
 
 在仓库根目录直接运行：
 
 ```matlab
-run_pwe      % PWE：一般时空晶体 + PTC，双折叠第一布里渊区能带
-run_tmm      % TMM：二元时间晶体精确能带
+run_pwe      % PWE：设置时间晶体参数，绘制 Re(ω) 与 Im(ω)
+run_tmm      % TMM：设置方波时间晶体参数，绘制 Re(ω) 与 Im(ω)
 run_fdtd     % FDTD：波包、宽带 FFT 能带、双重折叠谱
 ```
 
-结果留在工作区；默认不写盘、不创建目录（各脚本末尾的 `doSave` 开关默认关闭）。
+结果留在工作区；默认不写盘、不创建目录。`run_pwe` 和 `run_tmm` 各只生成一张包含实部/虚部的图。
 
 ## 统一归一化 / Normalization
 
@@ -40,11 +40,11 @@ run_fdtd     % FDTD：波包、宽带 FFT 能带、双重折叠谱
 
 | 方法 | 适用范围 | 输出 |
 |------|---------|------|
-| PWE | 任意 (x,t) 双周期、无损、标量介质 | 复准频率能带（含带隙内增长/衰减分支） |
-| TMM | 空间均匀、时间分段常数（二元/多层）介质 | 精确复准频率（FDTD-FFT 与 PWE 的基准） |
+| PWE | 空间均匀、时间周期、无损、严格正 ε、μ=1 的普通介质 | 两条复准频率能带的实部与虚部 |
+| TMM | 空间均匀、无损、严格正 ε/μ 的两层方波时间晶体 | 两条精确复准频率能带的实部与虚部 |
 | FDTD | 任意 (x,t) 双周期介质（全场时域） | 场演化；FFT 能带给出实频率脊线，带隙虚部需 TMM/PWE 补充 |
 
-限制：标量一维、非色散、无损（默认）。FDTD 的 FFT 能带只给出实频率脊线（功率谱），无法恢复带隙内的复准频率虚部——带隙结构请以 TMM/PWE 为准。详见各入口脚本头部注释与 [V3_REFACTOR_PLAN.md](V3_REFACTOR_PLAN.md)。
+限制：标量一维、非色散、无损（默认）。PWE 入口专注于光学时间晶体；在 `run_pwe.m` 顶部用 `modulationType='square'` 或 `'sinusoidal'` 选择调制，并设置 `epsHigh/epsLow`、占空比或相位、周期、Fourier 截断和 k 扫描。PWE 不调用 TMM、不计算权重、不返回本征矢，只保留 `bands.k` 和两条 `bands.omega`。材料采样器拒绝零、负数和复数 ε。TMM 只考虑两层方波调制；在 `run_tmm.m` 顶部设置两层的 ε/μ、占空比、周期和 k 扫描。`tmm_bands` 采用时间界面处连续的 `[D;B]` 状态，只返回 `result.k` 和两条 `result.omega`，不再暴露单周期矩阵、Floquet 乘子或带隙掩码。FDTD 的 FFT 能带只给出实频率脊线，无法恢复带隙内的复准频率虚部。详见各入口脚本头部注释与 [V3_REFACTOR_PLAN.md](V3_REFACTOR_PLAN.md)。
 
 ## 版本与旧版恢复 / Version & Legacy
 
