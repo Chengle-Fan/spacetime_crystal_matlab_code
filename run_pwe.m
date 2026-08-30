@@ -1,36 +1,40 @@
-%RUN_PWE  PWE bands of a one-dimensional photonic time crystal.
+%RUN_PWE  用 PWE 计算一维光学时间晶体的复准频率能带。
 %
-% Edit only the parameter block below. The script computes and plots the real
-% and imaginary parts of the two quasifrequency bands. Normalized units use
-% c0=eps0=mu0=1 and mu_r=1.
+% 通常只需修改下方“用户参数”区域。脚本支持方波和正弦两种时间调制，
+% 计算两条复准频率能带，并分别绘制其实部和虚部。采用归一化单位
+% c0=eps0=mu0=1，且固定相对磁导率 mu_r=1；因此 k 与频率具有相同量纲。
+% 准频率约定为 exp(-i*omega*t)，所以正虚部表示增长，负虚部表示衰减。
 
-%% ===================== USER PARAMETERS =====================
+%% ===================== 用户参数 =====================
 
-% Material modulation: choose 'square' or 'sinusoidal'.
+% 时间调制类型：'square' 表示两值方波，'sinusoidal' 表示正弦调制。
 modulationType = 'square';
 
-% Permittivity range shared by both modulation types.
+% 两种调制共用的介电常数上下界，必须满足 epsHigh >= epsLow > 0。
 epsHigh = 5;
 epsLow  = 1;
 
-% Square-wave parameters.
-dutyCycle = 0.5;       % fraction of one period at epsHigh
-timeShift = 0;         % temporal shift in the same units as T
+% 方波参数：每个周期先保持 epsHigh，随后切换到 epsLow。
+dutyCycle = 0.5;       % epsHigh 在一个周期内所占的时间比例，范围为 (0,1)
+timeShift = 0;         % 整个方波相对于 t=0 的时间平移，单位与 T 相同
 
-% Sinusoidal parameter.
-sinePhase = 0;         % radians; eps=mean+amplitude*cos(Omega*t+sinePhase)
+% 正弦参数：epsilon(t)=平均值+振幅*cos(Omega*t+sinePhase)。
+sinePhase = 0;         % 初始相位，单位为弧度
 
-% Period, Fourier truncation and material sampling.
+% 时间周期、Fourier 截断阶数和材料采样数。
+% Mtime 越大，保留的时间谐波越多；Nt 用于计算材料 Fourier 系数。
+% 方波不连续，通常需要比正弦调制更大的 Mtime 和 Nt，并应通过同时增大
+% 两者来检查能带收敛，而不能只依赖某一组截断参数。
 T = 1;
-Mtime = 19;            % retained orders; increase to check band convergence
-Nt = 4096;             % increase together with Mtime for a square wave
+Mtime = 19;            % 保留 -Mtime:Mtime 共 2*Mtime+1 个时间谐波
+Nt = 4096;             % 一个周期内的无重复端点材料采样数
 
-% Wavenumber scan, normalized as k/Omega.
+% 波数扫描使用 k/Omega 归一化，其中 Omega=2*pi/T。
 kMinNormalized = -2;
 kMaxNormalized =  2;
 nK = 301;
 
-%% ===================== MATERIAL DEFINITION =====================
+%% ===================== 构造时间调制材料 =====================
 
 Omega = 2*pi/T;
 switch lower(modulationType)
@@ -40,13 +44,15 @@ switch lower(modulationType)
         end
         epsFun = @(t) epsLow + (epsHigh-epsLow) .* ...
             (mod(t-timeShift,T) < dutyCycle*T);
-        profileName = 'Square-wave time crystal';
+        profileName = '方波光学时间晶体';
 
     case 'sinusoidal'
+        % 用上下界确定平均值和振幅，从而保证介电常数范围仍为
+        % [epsLow,epsHigh]。
         epsMean = (epsHigh+epsLow)/2;
         epsAmplitude = (epsHigh-epsLow)/2;
         epsFun = @(t) epsMean + epsAmplitude*cos(Omega*t+sinePhase);
-        profileName = 'Sinusoidal time crystal';
+        profileName = '正弦调制光学时间晶体';
 
     otherwise
         error('modulationType must be ''square'' or ''sinusoidal''.');
@@ -56,16 +62,19 @@ if epsLow <= 0 || epsHigh < epsLow
     error('Require epsHigh >= epsLow > 0.');
 end
 
-%% ===================== PWE CALCULATION =====================
+%% ===================== PWE 能带计算 =====================
 
+% 第一步把 epsilon(t) 转换为 Fourier 卷积矩阵；第二步对每个守恒波数 k
+% 求解广义本征值问题。bands 只包含 k 和两条复准频率 omega。
 pweCfg = struct('T',T,'Mtime',Mtime,'Nt',Nt);
 fourier = pwe_fourier(epsFun,pweCfg);
 kNormalized = linspace(kMinNormalized,kMaxNormalized,nK);
 kScan = kNormalized*Omega;
 bands = pwe_bands(fourier,kScan);
 
-%% ===================== REAL AND IMAGINARY BANDS =====================
+%% ===================== 绘制能带实部和虚部 =====================
 
+% 每个波数对应两个准频率根，因此复制横坐标以便统一展开后绘制散点。
 kPlot = repmat(kNormalized,2,1);
 
 figure('Color','w','Position',[100 100 1050 440]);
@@ -75,7 +84,7 @@ axReal = nexttile(layout);
 scatter(axReal,kPlot(:),real(bands.omega(:))/Omega,12,'filled');
 xlabel(axReal,'k/\Omega');
 ylabel(axReal,'Re(\omega)/\Omega');
-title(axReal,'Real bands');
+title(axReal,'准频率实部');
 grid(axReal,'on');
 box(axReal,'on');
 
@@ -83,7 +92,7 @@ axImag = nexttile(layout);
 scatter(axImag,kPlot(:),imag(bands.omega(:))/Omega,12,'filled');
 xlabel(axImag,'k/\Omega');
 ylabel(axImag,'Im(\omega)/\Omega');
-title(axImag,'Imaginary bands');
+title(axImag,'准频率虚部');
 grid(axImag,'on');
 box(axImag,'on');
 

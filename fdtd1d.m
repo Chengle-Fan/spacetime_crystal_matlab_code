@@ -1,493 +1,233 @@
-function out = fdtd1d(cfg)
-%FDTD1D  1-D D/B-Yee leapfrog FDTD for scalar, non-dispersive media.
-%
-% Directly advances the electric displacement D and the magnetic induction B
-% (not E and H). This is the correct field pair across an ideal temporal
-% interface: D and B are continuous at a permittivity/permeability switch,
-% so no separate interface jump matrix is needed. E = D/eps(x,t) and
-% H = B/mu(x,t) are recovered by the constitutive relations at each step.
-%
-% Leapfrog updates (periodic boundary; sponge boundary drops the end cells):
-%   Faraday: B^{n+1/2} = B^{n-1/2} - (dt/dx) * (E^n_{i+1} - E^n_i)
-%   Ampere : D^{n+1}   = D^n     - (dt/dx) * (H^{n+1/2}_i - H^{n+1/2}_{i-1})
-% An explicit temporal interface centered on an integer E-node uses the
-% central correction E_interface = 0.5*(D/eps(t-) + D/eps(t+)) when advancing
-% B across the switch, avoiding a one-sided (first-order in time) error.
-%
-% Scope: ordinary positive media only (eps and mu finite positive real).
-% Complex eps/mu, negative or zero values are rejected — the stability and
-% material contract is defined only for lossless non-dispersive media.
-%
-% CFL: the stability audit is RIGOROUS. The kernel ALWAYS samples eps on the
-% E grid at every integer node (and both sides of each temporal interface)
-% and mu on the H grid at every half node, and uses
-%   maxWaveSpeed = 1/sqrt(min(eps) * min(mu))
-% over those exact states. A caller-supplied cfg.maxWaveSpeed is validated
-% as a strict upper bound and cross-checked against this estimate: a value
-% below the estimated bound is REJECTED with an error (it would under-state
-% the Courant number and hide instability). This covers the actual staggered
-% grids and every stepping
-% time, so a reported sampledCourant < 1 is a strict guarantee for the
-% numerical scheme (a coarse 9-point audit cannot guarantee this and is no
-% longer used).
-%
-% INPUTS  cfg (struct)
-%   x             : uniform E-grid, >= 5 points, strictly increasing finite
-%                   real vector (row or column).
-%   dt            : time step, positive real.
-%   nSteps        : nonnegative integer number of leapfrog steps.
-%   epsFun(x,t)   : relative permittivity; returns a finite positive real
-%                   array the same size as x.
-%   muFun(x,t)    : optional, default @(x,t) ones(size(x)) (mu_r = 1).
-%   boundary      : 'sponge' (default) or 'periodic'.
-%   spongeCells   : absorbing-layer width in cells, nonnegative integer,
-%                   default min(80,floor(Nx/8)); the two sponges must not
-%                   overlap (2*spongeCells < Nx).
-%   spongeStrength: damping strength, finite nonnegative real, default 0.12.
-%   E0            : E at t = 0 on the E grid (finite, complex allowed).
-%   Hhalf0        : H at t = -dt/2 on the H grid (finite, complex allowed).
-%   recordEvery   : record a snapshot every N steps (positive finite integer,
-%                   default 1). Snapshots are taken at t = 0 and at every
-%                   multiple of recordEvery up to the last one <= nSteps; a
-%                   final state not landing on a multiple is omitted.
-%   temporalInterfaces : strictly increasing switch times that must align with
-%                   integer E-grid nodes n*dt (default: none).
-%   temporalInterfaceTolerance : alignment tolerance (default ~dt/100).
-%   sourceD(x,t,n): optional soft source: array same size as x, added to D
-%                   after the Ampere update at step n (finite, complex
-%                   allowed). It is an INCREMENT of D added per step: the
-%                   physical current density it represents is sourceD/dt.
-%   maxWaveSpeed  : optional validated upper bound on 1/sqrt(eps*mu) over the
-%                   whole run (finite, real, strictly positive). The sampled
-%                   estimate is always computed and cross-checked against it:
-%                   a value below the estimate is rejected with an error.
-%
-% OUTPUTS (struct)
-%   out.x, out.xH  : E grid and H grid (staggered by dx/2).
-%   out.t          : nRecords x 1 record times (t = 0 first).
-%   out.D, out.E, out.H : nRecords x Nx histories (H interpolated to E grid);
-%                   D is ALWAYS stored (no storeD switch).
-%   out.dx, out.dt, out.boundary.
-%   out.sampledMaxWaveSpeed, out.maxWaveSpeedSource ('user'/'estimated'),
-%   out.sampledCourant : CFL audit result.
-%   out.temporalInterfaces, out.processedTemporalInterfaceCount.
+function result = fdtd1d(cfg)
+%FDTD1D  有限一维介质的 D/B-Yee 时域有限差分求解器。
+% 仅处理初值激发、开放海绵边界的有限样品，并只记录复电场 E。
 
-%==========================================================================
-% Grid and step validation (strictly increasing finite real x, dx > 0)
-%==========================================================================
-if ~isstruct(cfg)
-    error('cfg must be a struct.');
+if nargin ~= 1 || ~isstruct(cfg) || ~isscalar(cfg)
+    error('必须以标量结构体 cfg 调用 fdtd1d。');
 end
-if ~isfield(cfg, 'x') || isempty(cfg.x)
-    error('cfg.x is required.');
+required = {'x','dt','nSteps','epsFun','E0','Hhalf0'};
+% 必需输入分别给出 E 网格、时间步数、材料函数，以及相差半个时间步的
+% E(t=0) 和 H(t=-dt/2) 初值。muFun、记录间隔和海绵参数在下方读取默认值。
+missing = required(~isfield(cfg,required));
+if ~isempty(missing)
+    error('cfg 缺少字段：%s。',strjoin(missing,', '));
 end
-if ~isvector(cfg.x)
-    error('cfg.x must be a vector.');
+
+%% ===================== 网格和步数检查 =====================
+
+if ~isnumeric(cfg.x) || ~isvector(cfg.x) || numel(cfg.x) < 5 || ...
+        ~isreal(cfg.x) || any(~isfinite(cfg.x))
+    error('cfg.x 必须是至少含 5 点的有限实向量。');
 end
 x = cfg.x(:).';
-Nx = numel(x);
-if Nx < 5
-    error('The E grid must contain at least five points.');
-end
-if ~isreal(x) || ~all(isfinite(x))
-    error('cfg.x must contain only finite real values.');
-end
-if any(diff(x) <= 0)
-    error('cfg.x must be strictly increasing (dx > 0); descending grids are not supported.');
-end
 dxVector = diff(x);
-dx = mean(dxVector);
-if max(abs(dxVector - dx)) > 1e-10*max(1, abs(dx))
-    error('cfg.x must be uniformly spaced.');
+if any(dxVector <= 0)
+    error('cfg.x 必须严格递增。');
 end
+dx = mean(dxVector);
+if max(abs(dxVector-dx)) > 1e-10*max(1,abs(dx))
+    error('cfg.x 必须是均匀网格。');
+end
+Nx = numel(x);
+xH = x(1:end-1)+dx/2;
+
 dt = cfg.dt;
 nSteps = cfg.nSteps;
-if ~isscalar(dt) || ~isreal(dt) || ~isfinite(dt) || dt <= 0
-    error('cfg.dt must be a finite positive real scalar.');
+if ~isnumeric(dt) || ~isscalar(dt) || ~isreal(dt) || ~isfinite(dt) || dt <= 0
+    error('cfg.dt 必须是有限正实标量。');
 end
-if ~isscalar(nSteps) || ~isreal(nSteps) || ~isfinite(nSteps) || ...
-        nSteps < 0 || nSteps ~= round(nSteps)
-    error('cfg.nSteps must be a nonnegative integer scalar.');
+if ~isnumeric(nSteps) || ~isscalar(nSteps) || ~isreal(nSteps) || ...
+        ~isfinite(nSteps) || nSteps < 0 || nSteps ~= round(nSteps)
+    error('cfg.nSteps 必须是非负整数。');
 end
-
-%==========================================================================
-% Optional-parameter defaults
-%==========================================================================
-if isfield(cfg, 'muFun') && ~isempty(cfg.muFun)
+if ~isa(cfg.epsFun,'function_handle')
+    error('cfg.epsFun 必须是函数句柄。');
+end
+if isfield(cfg,'muFun') && ~isempty(cfg.muFun)
     muFun = cfg.muFun;
-else
-    muFun = @(xq,tq) ones(size(xq));
-end
-
-if isfield(cfg, 'boundary') && ~isempty(cfg.boundary)
-    boundary = lower(cfg.boundary);
-else
-    boundary = 'sponge';
-end
-if ~ismember(boundary, {'sponge','periodic'})
-    error('cfg.boundary must be ''sponge'' or ''periodic''.');
-end
-
-% recordEvery must be a positive finite integer (P1-04): validate before any
-% allocation. Snapshots at t=0 and every recordEvery-th step <= nSteps.
-if isfield(cfg, 'recordEvery') && ~isempty(cfg.recordEvery)
-    recordEvery = cfg.recordEvery;
-else
-    recordEvery = 1;
-end
-if ~isscalar(recordEvery) || ~isreal(recordEvery) || ...
-        ~isfinite(recordEvery) || recordEvery < 1 || ...
-        recordEvery ~= round(recordEvery)
-    error('cfg.recordEvery must be a positive finite integer scalar.');
-end
-
-%==========================================================================
-% Temporal interfaces: align switch times with integer E-grid nodes
-%==========================================================================
-timeScale = max(1, abs(nSteps*dt));
-defaultInterfaceTolerance = min(max(128*eps(timeScale), 1e-12*dt), dt/100);
-if isfield(cfg, 'temporalInterfaceTolerance') && ...
-        ~isempty(cfg.temporalInterfaceTolerance)
-    temporalInterfaceTolerance = cfg.temporalInterfaceTolerance;
-    if ~isscalar(temporalInterfaceTolerance) || ...
-            ~isreal(temporalInterfaceTolerance) || ...
-            ~isfinite(temporalInterfaceTolerance) || ...
-            temporalInterfaceTolerance <= 0 || ...
-            temporalInterfaceTolerance >= dt/4
-        error(['cfg.temporalInterfaceTolerance must be a finite positive ', ...
-            'real scalar smaller than cfg.dt/4.']);
+    if ~isa(muFun,'function_handle')
+        error('cfg.muFun 必须是函数句柄。');
     end
 else
-    temporalInterfaceTolerance = defaultInterfaceTolerance;
+    muFun = @(position,time) ones(size(position));
 end
 
-if isfield(cfg, 'temporalInterfaces') && ~isempty(cfg.temporalInterfaces)
-    temporalInterfacesInput = double(cfg.temporalInterfaces(:).');
-    if any(~isreal(temporalInterfacesInput)) || any(~isfinite(temporalInterfacesInput)) || ...
-            any(diff(temporalInterfacesInput) <= 0)
-        error('cfg.temporalInterfaces must be strictly increasing finite reals.');
+recordEvery = read_integer_option(cfg,'recordEvery',1,1);
+spongeCells = read_integer_option(cfg,'spongeCells',floor(Nx/10),0);
+if 2*spongeCells >= Nx
+    error('两侧 spongeCells 不能重叠。');
+end
+if isfield(cfg,'spongeStrength') && ~isempty(cfg.spongeStrength)
+    spongeStrength = cfg.spongeStrength;
+else
+    spongeStrength = 0.08;
+end
+if ~isnumeric(spongeStrength) || ~isscalar(spongeStrength) || ...
+        ~isreal(spongeStrength) || ~isfinite(spongeStrength) || spongeStrength < 0
+    error('cfg.spongeStrength 必须是非负有限实标量。');
+end
+
+E = read_initial_field(cfg.E0,Nx,'cfg.E0');
+H = read_initial_field(cfg.Hhalf0,Nx-1,'cfg.Hhalf0');
+
+%% ===================== 时间突变节点检查 =====================
+
+if isfield(cfg,'temporalInterfaces') && ~isempty(cfg.temporalInterfaces)
+    temporalInterfaces = cfg.temporalInterfaces(:).';
+    if ~isnumeric(temporalInterfaces) || ~isreal(temporalInterfaces) || ...
+            any(~isfinite(temporalInterfaces)) || any(diff(temporalInterfaces) <= 0)
+        error('cfg.temporalInterfaces 必须是严格递增的有限实向量。');
     end
-    temporalInterfaceNodes = round(temporalInterfacesInput/dt);
-    temporalInterfaces = temporalInterfaceNodes*dt;
-    if any(abs(temporalInterfacesInput - temporalInterfaces) > ...
-            temporalInterfaceTolerance)
-        error(['Each cfg.temporalInterfaces value must align with an E-grid ', ...
-            'time n*cfg.dt within cfg.temporalInterfaceTolerance.']);
+    interfaceNodes = round(temporalInterfaces/dt);
+    alignmentError = abs(temporalInterfaces-interfaceNodes*dt);
+    if any(alignmentError > max(128*eps(max(1,nSteps*dt)),1e-10*dt))
+        error('每个时间突变必须严格对齐到整数时间节点 n*dt。');
     end
-    if any(temporalInterfaceNodes < 0) || ...
-            any(temporalInterfaceNodes >= nSteps)
-        error(['cfg.temporalInterfaces must lie in [0, cfg.nSteps*cfg.dt). ', ...
-            'An interface at the final time has no following B half-step.']);
-    end
-    if any(diff(temporalInterfaceNodes) <= 0)
-        error('Distinct cfg.temporalInterfaces must map to distinct E-grid nodes.');
+    temporalInterfaces = interfaceNodes*dt;
+    if any(interfaceNodes < 0) || any(interfaceNodes >= nSteps)
+        error('时间突变必须位于 [0,nSteps*dt) 内。');
     end
 else
-    temporalInterfaces = zeros(1, 0);
-    temporalInterfaceNodes = zeros(1, 0);
+    temporalInterfaces = [];
+    interfaceNodes = [];
+end
+interfaceIdByStep = zeros(1,nSteps,'uint32');
+if ~isempty(interfaceNodes)
+    interfaceIdByStep(interfaceNodes+1) = uint32(1:numel(interfaceNodes));
 end
 
-temporalInterfaceIdByStep = zeros(1, nSteps, 'uint32');
-if ~isempty(temporalInterfaceNodes)
-    temporalInterfaceIdByStep(temporalInterfaceNodes + 1) = ...
-        uint32(1:numel(temporalInterfaceNodes));
-end
-temporalInterfaceSideOffset = dt/4;
+%% ===================== 初始 D/B 和严格 CFL 审计 =====================
 
-%==========================================================================
-% Yee grids and initial conditions (size + finiteness validated)
-%==========================================================================
-switch boundary
-    case 'periodic'
-        xH = x + dx/2;                    % Nx points (wrapped curl)
-    case 'sponge'
-        xH = x(1:end-1) + dx/2;           % Nx-1 points (open curls)
-end
-
-E = eval_initial_field(cfg, 'E0', x, 0);              % complex allowed
-H = eval_initial_field(cfg, 'Hhalf0', xH, -dt/2);
-
-% Constitutive init: D = eps*E at t=0, B = mu*H at t=-dt/2.
-epsNow = eval_material(cfg.epsFun, x, 0, 'epsFun');
-muHalf = eval_material(muFun, xH, -dt/2, 'muFun');
-D = epsNow.*E;
+% 理想时间界面上连续的是 D/B，而 E/H 通常跳变，因此内核始终以
+% D=epsilon*E、B=mu*H 初始化和推进，仅在需要计算旋度时恢复 E/H。
+epsilonNow = evaluate_material(cfg.epsFun,x,0,'epsFun');
+muHalf = evaluate_material(muFun,xH,-dt/2,'muFun');
+D = epsilonNow.*E;
 B = muHalf.*H;
 
-%==========================================================================
-% Rigorous CFL audit (P1-02/P1-03): covers the actual E/H grids and every
-% stepping time. Caller-provided maxWaveSpeed is validated as a strict
-% positive finite real upper bound; otherwise it is estimated from the min
-% eps on the E grid (all integer nodes + both sides of each interface) and
-% the min mu on the H grid (all half nodes): 1/sqrt(min_eps * min_mu).
-%==========================================================================
-% The estimated bound is ALWAYS computed from the actual E/H grids so a
-% caller-supplied bound can be cross-checked against it (a user value below
-% the true 1/sqrt(min_eps*min_mu) would under-state the Courant number and
-% hide instability). The estimate covers every stepping time on the E grid
-% (all integer nodes + both sides of each temporal interface) and every B
-% half-step on the H grid (all half nodes).
-epsMin = inf;
-auditTimesE = (0:nSteps)*dt;
-if ~isempty(temporalInterfaceNodes)
-    auditTimesE = [auditTimesE, temporalInterfaces - dt/4, ...
-        temporalInterfaces + dt/4];
+% epsilon 和 mu 可同时随空间、时间变化，因此分别在实际 E/H Yee 网格上
+% 扫描整个仿真使用的时刻。用全局最小 epsilon、mu 组合得到保守波速上界。
+epsilonMinimum = inf;
+epsilonAuditTimes = (0:nSteps)*dt;
+if ~isempty(temporalInterfaces)
+    epsilonAuditTimes = [epsilonAuditTimes,temporalInterfaces-dt/4, ...
+        temporalInterfaces+dt/4];
 end
-for tn = auditTimesE
-    v = eval_material(cfg.epsFun, x, tn, 'epsFun');
-    epsMin = min(epsMin, min(v));
+for timeValue = epsilonAuditTimes
+    epsilonValue = evaluate_material(cfg.epsFun,x,timeValue,'epsFun');
+    epsilonMinimum = min(epsilonMinimum,min(epsilonValue));
 end
-muMin = inf;
-auditTimesH = ((1:nSteps) - 0.5)*dt;
-for th = auditTimesH
-    v = eval_material(muFun, xH, th, 'muFun');
-    muMin = min(muMin, min(v));
+muMinimum = inf;
+muAuditTimes = (-0.5:nSteps-0.5)*dt;
+for timeValue = muAuditTimes
+    muValue = evaluate_material(muFun,xH,timeValue,'muFun');
+    muMinimum = min(muMinimum,min(muValue));
 end
-maxWaveSpeedEst = 1/sqrt(epsMin*muMin);
-
-if isfield(cfg, 'maxWaveSpeed') && ~isempty(cfg.maxWaveSpeed)
-    maxWaveSpeed = cfg.maxWaveSpeed;
-    if ~isscalar(maxWaveSpeed) || ~isreal(maxWaveSpeed) || ...
-            ~isfinite(maxWaveSpeed) || maxWaveSpeed <= 0
-        error(['cfg.maxWaveSpeed (caller-provided upper bound on ', ...
-            '1/sqrt(eps*mu)) must be a finite, real, strictly positive ', ...
-            'scalar.']);
-    end
-    if maxWaveSpeed < maxWaveSpeedEst*(1 - 1e-9)
-        error(['cfg.maxWaveSpeed = %.6g is BELOW the estimated grid-bound ', ...
-            '1/sqrt(min_eps*min_mu) = %.6g; the effective CFL number would ', ...
-            'be under-stated and the leapfrog scheme may be unstable. A ', ...
-            'caller-supplied cfg.maxWaveSpeed must be a valid UPPER bound ', ...
-            'on the sampled estimate.'], maxWaveSpeed, maxWaveSpeedEst);
-    end
-    maxWaveSpeedSource = 'user';
-else
-    maxWaveSpeed = maxWaveSpeedEst;
-    maxWaveSpeedSource = 'estimated';
-end
-sampledCourant = maxWaveSpeed*dt/dx;
-if ~isfinite(sampledCourant)
-    error(['CFL audit produced a non-finite Courant number (%.6g). ', ...
-        'Check the material and grid.'], sampledCourant);
-end
-if sampledCourant >= 1
-    error(['One-dimensional CFL number is %.6g >= 1 using the %s upper ', ...
-        'bound maxWaveSpeed = %.6g. Reduce cfg.dt or provide a validated ', ...
-        'tighter cfg.maxWaveSpeed.'], sampledCourant, maxWaveSpeedSource, ...
-        maxWaveSpeed);
+maximumWaveSpeed = 1/sqrt(epsilonMinimum*muMinimum);
+courant = maximumWaveSpeed*dt/dx;
+if ~isfinite(courant) || courant >= 1
+    error('一维 Courant 数 %.6g 必须严格小于 1；请减小 dt 或增大空间分辨率。',courant);
 end
 
-%==========================================================================
-% Sponge absorbing layer (simplified absorption, NOT a PML)
-%==========================================================================
-dampE = ones(size(x));
-dampH = ones(size(xH));
-if strcmp(boundary, 'sponge')
-    if isfield(cfg, 'spongeCells') && ~isempty(cfg.spongeCells)
-        spongeCells = cfg.spongeCells;
-    else
-        spongeCells = min(80, floor(Nx/8));
-    end
-    if ~isscalar(spongeCells) || ~isreal(spongeCells) || ...
-            ~isfinite(spongeCells) || spongeCells < 0 || ...
-            spongeCells ~= round(spongeCells)
-        error('cfg.spongeCells must be a nonnegative finite integer scalar.');
-    end
-    if 2*spongeCells >= Nx
-        error(['cfg.spongeCells = %d makes the two absorbing layers ', ...
-            'overlap on a %d-point grid (need 2*spongeCells < Nx).'], ...
-            spongeCells, Nx);
-    end
-    if isfield(cfg, 'spongeStrength') && ~isempty(cfg.spongeStrength)
-        spongeStrength = cfg.spongeStrength;
-    else
-        spongeStrength = 0.12;
-    end
-    if ~isscalar(spongeStrength) || ~isreal(spongeStrength) || ...
-            ~isfinite(spongeStrength) || spongeStrength < 0
-        error('cfg.spongeStrength must be a finite nonnegative real scalar.');
-    end
-    edgeDistanceE = min((x - x(1))/dx, (x(end) - x)/dx);
-    edgeDistanceH = min((xH - x(1))/dx, (x(end) - xH)/dx);
-    maskE = edgeDistanceE < spongeCells;
-    maskH = edgeDistanceH < spongeCells;
-    sE = (spongeCells - edgeDistanceE(maskE))/spongeCells;
-    sH = (spongeCells - edgeDistanceH(maskH))/spongeCells;
-    dampE(maskE) = exp(-spongeStrength*sE.^3);
-    dampH(maskH) = exp(-spongeStrength*sH.^3);
+%% ===================== 海绵吸收层 =====================
+
+% 海绵通过每一步乘阻尼因子吸收外行波，属于简化吸收层而不是 PML。
+% 使用者仍需增加背景/海绵宽度或缩短观测时间来检查边界回波污染。
+dampingE = ones(1,Nx);
+dampingH = ones(1,Nx-1);
+if spongeCells > 0 && spongeStrength > 0
+    distanceE = min(0:Nx-1,Nx-1:-1:0);
+    distanceH = min((0:Nx-2)+0.5,(Nx-2:-1:0)+0.5);
+    maskE = distanceE < spongeCells;
+    maskH = distanceH < spongeCells;
+    depthE = (spongeCells-distanceE(maskE))/spongeCells;
+    depthH = (spongeCells-distanceH(maskH))/spongeCells;
+    dampingE(maskE) = exp(-spongeStrength*depthE.^3);
+    dampingH(maskH) = exp(-spongeStrength*depthH.^3);
 end
 
-%==========================================================================
-% Record arrays and initial snapshot (exact record index bookkeeping)
-%==========================================================================
-recordSteps = recordEvery:recordEvery:nSteps;
-nRecords = 1 + numel(recordSteps);
-DHistory = complex(zeros(nRecords, Nx));
-EHistory = complex(zeros(nRecords, Nx));
-HHistory = complex(zeros(nRecords, Nx));
-tHistory = zeros(nRecords, 1);
+%% ===================== 记录数组 =====================
 
-recordId = 1;
-HOnE = yee_h_to_e_grid(H, boundary, Nx);
-DHistory(recordId, :) = D;
-EHistory(recordId, :) = E;
-HHistory(recordId, :) = HOnE;
-tHistory(recordId) = 0;
-recordStepIndex = 1;                 % next target step = recordSteps(idx)
+recordSteps = 0:recordEvery:nSteps;
+EHistory = complex(zeros(numel(recordSteps),Nx));
+tHistory = recordSteps(:)*dt;
+EHistory(1,:) = E;
+nextRecord = 2;
 
-%==========================================================================
-% Leapfrog time-stepping
-%==========================================================================
-processedTemporalInterfaceCount = 0;
+%% ===================== D/B-Yee 时间推进 =====================
+
+% 每一步先用 Faraday 更新半时间格上的 B，再用 Ampere 更新整数时间格上的
+% D。开放边界不做首尾环绕，因此空间端点只通过海绵阻尼逐渐衰减。
 for step = 1:nSteps
-    % ---- Faraday: B^{n+1/2} from E^n (with central interface correction) ----
-    temporalInterfaceId = temporalInterfaceIdByStep(step);
-    if temporalInterfaceId ~= 0
-        processedTemporalInterfaceCount = ...
-            processedTemporalInterfaceCount + 1;
-        tInterface = temporalInterfaces(double(temporalInterfaceId));
-        epsBefore = eval_material(cfg.epsFun, x, ...
-            tInterface - temporalInterfaceSideOffset, 'epsFun');
-        epsAfter  = eval_material(cfg.epsFun, x, ...
-            tInterface + temporalInterfaceSideOffset, 'epsFun');
-        EForBUpdate = 0.5*(D./epsBefore + D./epsAfter);
+    % B 从 t=(n-1/2)dt 推到 (n+1/2)dt。若中心 t=n*dt 是材料突变，
+    % 用界面两侧 E 的平均值构造中心时间近似；其他时刻直接使用当前 E。
+    interfaceId = interfaceIdByStep(step);
+    if interfaceId ~= 0
+        interfaceTime = temporalInterfaces(double(interfaceId));
+        epsilonBefore = evaluate_material(cfg.epsFun,x,interfaceTime-dt/4,'epsFun');
+        epsilonAfter = evaluate_material(cfg.epsFun,x,interfaceTime+dt/4,'epsFun');
+        electricForB = 0.5*(D./epsilonBefore+D./epsilonAfter);
     else
-        EForBUpdate = E;
+        electricForB = E;
     end
 
-    if strcmp(boundary, 'periodic')
-        curlE = circshift(EForBUpdate, -1) - EForBUpdate;
-    else
-        curlE = diff(EForBUpdate);
-    end
-    B = B - (dt/dx)*curlE;
-    B = B.*dampH;
-    tHalf = (step - 0.5)*dt;
-    H = B./eval_material(muFun, xH, tHalf, 'muFun');
+    B = B-(dt/dx)*diff(electricForB);
+    B = B.*dampingH;
+    timeHalf = (step-0.5)*dt;
+    H = B./evaluate_material(muFun,xH,timeHalf,'muFun');
 
-    % ---- Ampere: D^{n+1} from H^{n+1/2} ----
-    if strcmp(boundary, 'periodic')
-        curlH = H - circshift(H, 1);
-        D = D - (dt/dx)*curlH;
-    else
-        D(2:end-1) = D(2:end-1) - (dt/dx)*(H(2:end) - H(1:end-1));
-    end
+    % 开放端点没有环绕差分，只更新内部 D；端点场由海绵逐步压低。
+    D(2:end-1) = D(2:end-1)-(dt/dx)*(H(2:end)-H(1:end-1));
+    D = D.*dampingE;
+    timeNow = step*dt;
+    E = D./evaluate_material(cfg.epsFun,x,timeNow,'epsFun');
 
-    tNow = step*dt;
-
-    if isfield(cfg, 'sourceD') && ~isempty(cfg.sourceD)
-        D = D + eval_source(cfg.sourceD, x, tNow, step, 'sourceD');
-    end
-    D = D.*dampE;
-    E = D./eval_material(cfg.epsFun, x, tNow, 'epsFun');
-
-    % ---- record ----
-    if recordStepIndex <= numel(recordSteps) && step == recordSteps(recordStepIndex)
-        recordId = recordId + 1;
-        HOnE = yee_h_to_e_grid(H, boundary, Nx);
-        DHistory(recordId, :) = D;
-        EHistory(recordId, :) = E;
-        HHistory(recordId, :) = HOnE;
-        tHistory(recordId) = tNow;
-        recordStepIndex = recordStepIndex + 1;
+    if nextRecord <= numel(recordSteps) && step == recordSteps(nextRecord)
+        EHistory(nextRecord,:) = E;
+        nextRecord = nextRecord+1;
     end
 end
 
-if processedTemporalInterfaceCount ~= numel(temporalInterfaces)
-    error(['Processed %d temporal interfaces, but %d aligned interfaces ', ...
-        'were configured.'], processedTemporalInterfaceCount, ...
-        numel(temporalInterfaces));
+% 只返回后处理真正需要的复电场历史及网格信息；D/B/H 不保存以降低内存。
+result.x = x;
+result.t = tHistory;
+result.E = EHistory;
+result.dx = dx;
+result.dt = dt;
+result.courant = courant;
 end
 
-%==========================================================================
-% Output
-%==========================================================================
-out.x = x;
-out.xH = xH;
-out.t = tHistory;
-out.D = DHistory;
-out.E = EHistory;
-out.H = HHistory;
-out.dx = dx;
-out.dt = dt;
-out.boundary = boundary;
-out.sampledMaxWaveSpeed = maxWaveSpeed;
-out.maxWaveSpeedSource = maxWaveSpeedSource;
-out.sampledCourant = sampledCourant;
-out.temporalInterfaces = temporalInterfaces;
-out.processedTemporalInterfaceCount = processedTemporalInterfaceCount;
+% -------------------------------------------------------------------------
+function field = read_initial_field(value,expectedLength,label)
+% 初始场允许为复数，但必须是长度精确匹配且全部有限的向量。
+if ~isnumeric(value) || ~isvector(value) || numel(value) ~= expectedLength || ...
+        any(~isfinite(value))
+    error('%s 必须是含 %d 个有限数值的向量。',label,expectedLength);
+end
+field = value(:).';
 end
 
-%==========================================================================
-function v = eval_material(fun, grid, tval, label)
-%EVAL_MATERIAL Evaluate eps/mu on a grid and enforce the positive-real,
-%grid-size and finiteness contract (P1-05).
-if ~isa(fun, 'function_handle')
-    error('%s must be a function handle.', label);
+% -------------------------------------------------------------------------
+function value = evaluate_material(materialFunction,grid,timeValue,label)
+% 每次材料求值都执行尺寸、有限性和正实性检查，禁止伪造 NaN/Inf 场。
+value = materialFunction(grid,timeValue);
+if ~isnumeric(value) || ~isequal(size(value),size(grid)) || ...
+        ~isreal(value) || any(~isfinite(value)) || any(value <= 0)
+    error('%s 在 t=%.16g 必须返回与网格同尺寸的有限正实数组。',label,timeValue);
 end
-v = fun(grid, tval);
-if ~isequal(size(v), size(grid))
-    error(['%s must return an array the same size as its grid argument ', ...
-        '(got %s on a %s grid).'], label, mat2str(size(v)), mat2str(size(grid)));
-end
-v = v(:).';
-if ~all(isfinite(v))
-    error('%s returned non-finite values at t = %.16g.', label, tval);
-end
-if any(~isreal(v)) || any(real(v) <= 0)
-    error(['%s must return positive real values (ordinary non-dispersive ', ...
-        'lossless media) at t = %.16g.'], label, tval);
-end
+value = value(:).';
 end
 
-%==========================================================================
-function v = eval_source(fun, grid, tval, step, label)
-%EVAL_SOURCE Evaluate a soft source callback; finite, size-matched, complex
-%allowed (P1-05).
-if ~isa(fun, 'function_handle')
-    error('%s must be a function handle.', label);
-end
-v = fun(grid, tval, step);
-if ~isequal(size(v), size(grid))
-    error(['%s must return an array the same size as its grid argument ', ...
-        '(got %s on a %s grid).'], label, mat2str(size(v)), mat2str(size(grid)));
-end
-v = v(:).';
-if ~all(isfinite(v))
-    error('%s returned non-finite values at step %d (t = %.16g).', ...
-        label, step, tval);
-end
-end
-
-%==========================================================================
-function f = eval_initial_field(cfg, fieldName, grid, tval)
-%EVAL_INITIAL_FIELD Read a finite complex-allowed initial field of exact size.
-if isfield(cfg, fieldName) && ~isempty(cfg.(fieldName))
-    v = cfg.(fieldName);
-    if ~isvector(v)
-        error('cfg.%s must be a vector (no implicit matrix flattening).', fieldName);
-    end
-    if numel(v) ~= numel(grid)
-        error('cfg.%s has %d elements; the selected boundary needs %d.', ...
-            fieldName, numel(v), numel(grid));
-    end
-    f = v(:).';
-    if ~all(isfinite(f))
-        error('cfg.%s must be finite at t = %.16g.', fieldName, tval);
-    end
+% -------------------------------------------------------------------------
+function value = read_integer_option(cfg,fieldName,defaultValue,minimumValue)
+% 读取可选整数参数，并统一执行有限性和下界检查。
+if isfield(cfg,fieldName) && ~isempty(cfg.(fieldName))
+    value = cfg.(fieldName);
 else
-    f = zeros(size(grid));
+    value = defaultValue;
 end
-end
-
-%==========================================================================
-function HOnE = yee_h_to_e_grid(H, boundary, Nx)
-%YEE_H_TO_E_GRID Interpolate H from the staggered H grid onto the E grid.
-if strcmp(boundary, 'periodic')
-    HOnE = 0.5*(H + circshift(H, 1));
-else
-    HOnE = zeros(1, Nx, 'like', H);
-    HOnE(2:end-1) = 0.5*(H(1:end-1) + H(2:end));
-    HOnE(1) = H(1);
-    HOnE(end) = H(end);
+if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
+        ~isfinite(value) || value < minimumValue || value ~= round(value)
+    error('cfg.%s 必须是不小于 %d 的有限整数。',fieldName,minimumValue);
 end
 end

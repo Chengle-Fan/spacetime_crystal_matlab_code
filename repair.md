@@ -337,5 +337,18 @@
 - `run_tmm.m` 只调用 `tmm_bands`，只绘制 `Re(omega)/Omega` 与 `Im(omega)/Omega`。已删除半迹图、动量带隙着色、PWE/解析对比、控制台诊断和保存块。
 - `tmm_bands(kScan,epsLayers,muLayers,durations)` 严格要求两个正持续时间层。它使用时间界面处连续的 `[D;B]` 状态和每层解析传播矩阵，不对时间离散；准频率由单周期矩阵的两个 Floquet 乘子主对数得到。
 - 输出严格缩减为 `result.k` 与 `result.omega`。为避免强增长区直接求特征值时丢失很小的互易乘子，代码先稳定选取模较大的二次方程根，再以行列式除法恢复另一根；零、负、复数或非有限材料参数均被拒绝。
-- `run_fdtd.m` 的 TMM 通带判据同步改为两条准频率的虚部为零，并直接从其实部取得精确通带频率，不再依赖已移除的 `halfTrace` 字段。
+- 当时的 `run_fdtd.m` 曾同步解除对 `halfTrace` 的依赖；该旧入口现已由下节记录的两个独立 FDTD 脚本完全替代。
 - `tmm_bands.m` 与 `run_tmm.m` 合计从约 `335` 行降至 `152` 行。MATLAB R2026a Code Analyzer 对两个 TMM 文件均为 `0` 条提示；均匀介质解析色散最大误差为 `2.871e-16`，默认方波动量带隙中增长/衰减支的共轭误差为 `7.068e-17 Omega`，默认入口可完整运行。MATLAB R2020a 仍未在本机实跑。
+
+## 10. FDTD/FFT 专项重构记录（2026-08-30）
+
+本节记录用户对 FDTD 最终用途的收窄；它优先于上文关于单一 `run_fdtd.m`、三个 Case、软源、理论叠加、ridge、权重、1/L 外推和多面板验收图的历史要求。
+
+- 原 `run_fdtd.m` 已移除，替换为两个独立入口：`run_fdtd_field.m` 只计算初值激发的有限样品并绘制一张 `|E(x,t)|`；`run_fdtd_fft.m` 独立读取前者保存的 `fdtd_field_data.mat`，只绘制一张局部 FFT 能带图。
+- 有限几何固定为“海绵 | 静态背景 | 时间调制样品 | 静态背景 | 海绵”。`sampleCellCount*cellSize` 只表示样品几何长度；纯时间晶体在空间上均匀，因此该长度单元不是空间晶格常数，也不触发 k 折叠。
+- 第一入口支持方波和正弦调制，并可用 `excitationRegion='bulk'/'k-gap'` 选择 Gaussian 初值中心波数。方波用精确 TMM、正弦用 PWE 只读验证目标 k 的区域属性；理论结果不叠加到 FDTD 或 FFT 图。
+- `fdtd1d.m` 只保留开放海绵边界、复 E/H 初值、D/B-Yee 推进、严格正材料检查、全时空 CFL 审计和时间突变中心修正。软源、周期边界及 D/H 全历史均已删除；输出只含 `x/t/E/dx/dt/courant`。
+- `fdtd_fft_bands.m` 只接受复电场 E，先裁剪样品内部时空 ROI，再要求时间窗为整数个无重复端点周期。空间维用 `fft`、时间维用 `ifft` 以匹配 `exp(i*k*x-i*omega*t)`；只折叠时间频率，输出仅为 `kNormalized/omegaNormalized/spectrumDb`。
+- FFT 使用固定空间/时间 Hann 窗和全谱统一归一化，删除逐 k 归一化、active mask、ridge、权重、原始诊断谱、空间 Floquet 折叠、多窗函数和约 30 个元数据字段。零填充因子严格限制为不小于 1 的整数，防止 MATLAB 在长度变短时截断时域数据。
+- 四个 FDTD/FFT 文件由约 `2129` 行降至 `873` 行。MATLAB R2026a Code Analyzer 均为 `0` 条提示；默认两阶段入口通过，场历史尺寸为 `601 x 1120`、Courant 数为 `0.2`，FFT 输出为 `48 x 720`。合成平面波的峰值从原始 `omega/Omega=1.3` 正确折叠至 `0.3`，k/Ω 与输入完全一致；时间界面 D 连续误差为 `0`，CFL>=1 输入被拒绝。正弦调制+k-gap 可选路径也已完整运行。MATLAB R2020a 仍未在本机实跑。
+- 物理限制：一次窄带 Gaussian 初值只能重建目标 k 附近的局部、有限样品响应谱；要覆盖更宽 k 必须减小包络宽度或做多次扫描。FFT 只能给出实频率响应，不能恢复 k-gap 中的 `Im(omega)`，有限时间增长造成的展宽不能解释为虚频能带。
