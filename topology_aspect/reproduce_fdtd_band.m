@@ -5,7 +5,7 @@ function result = reproduce_fdtd_band()
 close all;
 
 % 本文件只设置论文扫描参数和验证指标；逐 k 推进及 TMM 对照均强制来自
-% 根目录模板，避免 reproduction 中的内核副本与主代码发生漂移。
+% 根目录模板，避免 topology_aspect 中的内核副本与主代码发生漂移。
 [templateSource,templatePathCleanup] = ...
     use_root_templates({'fdtd_fft_bands','tmm_bands'});
 if isempty(templatePathCleanup)

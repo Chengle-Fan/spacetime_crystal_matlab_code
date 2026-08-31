@@ -53,12 +53,12 @@ run_fdtd_fft    % 独立逐 k 有限采样：只绘制 FFT Floquet 能带
 
 FFT 入口同样使用有限数据：每个 k 只有 `temporalCellCount` 个同相位采样点，观测跨度为 `(temporalCellCount-1)*T`，原生分辨率约为 `Delta[Re(omega)/Omega]=1/temporalCellCount`。周期型 Hann 窗会展宽谱峰，零填充只细化绘图网格。等相位采样把相差整数倍 Ω 的 Floquet 副本自动映射到 `[-Omega/2,Omega/2)`；不进行空间 FFT、空间折叠或有限样品 ROI 处理。主图仍按每个 k 独立归一化，只表示实准频率峰位；函数另返回未归一化列功率、后半窗主导增长率和 Courant/FFT/窗元数据。该增长率只近似 k-gap 的正增长支，不能由谱宽恢复完整的复频率两支。空间推进采用 `kYee=2*sin(k*dx/2)/dx`，科研使用时必须检查 dx、dt 与时间原胞数收敛。详见各入口脚本的逐段中文注释与 [repair.md](repair.md)。
 
-论文复现见 [`reproduction/`](reproduction/README.md)。该目录不复制模板求解器；复现入口会验证并直接调用本根目录的 TMM/FDTD 函数，同时在返回值中记录实际解析路径。
+论文复现见 [`topology_aspect/`](topology_aspect/README.md)。该目录不复制模板求解器；复现入口会验证并直接调用本根目录的 TMM/FDTD 函数，同时在返回值中记录实际解析路径。
 
 ## 版本与旧版恢复 / Version & Legacy
 
 - 当前版本 **3.0.1**（见 `VERSION.txt`）。当前用户收窄后的 PWE、TMM、FDTD 专项实现记录见 `repair.md` 第 8–10 节；它们优先于该文件前半部分保留的历史验收要求。
-- V3 曾移除旧版 `reproduction/` 和其他历史目录；当前 `reproduction/` 是随后按指定论文重新建立的独立复现目录，不是旧版目录恢复。
+- V3 曾移除旧版 `reproduction/` 和其他历史目录；当前 `topology_aspect/` 是随后按指定论文重新建立的独立复现目录，不是旧版目录恢复。
 - 旧版全部代码可从 git 标签 **`legacy-pre-v3-refactor`** 恢复。
 - 最小环境：**MATLAB R2020a+**（Base MATLAB，无 Toolbox 依赖）。四个入口脚本均从仓库根目录运行，无 `addpath`/startup 依赖；本次实测于 **R2026a**，R2020a 为声明下限（本机未安装，未实测）。
 

@@ -9,8 +9,8 @@ if ~iscell(requiredFunctions) || isempty(requiredFunctions) || ...
     error('requiredFunctions 必须是非空函数名字符元胞数组。');
 end
 
-reproductionDirectory = fileparts(mfilename('fullpath'));
-rootDirectory = fileparts(reproductionDirectory);
+topologyDirectory = fileparts(mfilename('fullpath'));
+rootDirectory = fileparts(topologyDirectory);
 pathEntries = strsplit(path,pathsep);
 rootWasAlreadyOnPath = any(strcmp(pathEntries,rootDirectory));
 

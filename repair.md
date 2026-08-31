@@ -358,7 +358,7 @@
 
 ## 11. 论文复现反馈驱动的 FDTD 修复（2026-08-30）
 
-本节记录根据 `reproduction/TEMPLATE_CODE_FEEDBACK.md` 执行的后续修复；它更新并覆盖第 10 节关于边界、场输出和最小返回字段的旧描述。
+本节记录根据 `topology_aspect/TEMPLATE_CODE_FEEDBACK.md` 执行的后续修复；它更新并覆盖第 10 节关于边界、场输出和最小返回字段的旧描述。
 
 - `fdtd1d.m` 现在显式区分 `fixed-distant` 与 `sponge`。前者是无阻尼固定远端截断，后者仍只是固定端点前的指数海绵而非 PML；返回结构记录边界类型、海绵参数、全域范围、最大波速和全域穿越时间，不再笼统称作严格开放边界。
 - `run_fdtd_field.m` 默认采用 `fixed-distant`，并以“最大传播距离 + 初始高斯六倍宽度”检查主场和可分辨尾场在仿真结束前不能到达端点。选择海绵时会明确警告：k-gap 可能指数放大海绵散射出的极小附加 k 分量，必须做边界距离、宽度和强度收敛。
@@ -368,5 +368,5 @@
 - 对取值范围解析已知的简单材料，可同时提供 `certifiedMinimumEpsilon/certifiedMinimumMu` 跳过昂贵的全时空 CFL 预扫描。内核在每次实际材料求值时仍核查认证下界；未提供下界时继续执行原有的全 E/H Yee 网格、全时间严格审计。
 - `fdtd_fft_bands.m` 的主图数据仍为逐 k 归一化有限窗实准频率谱，但新增未归一化列功率、后半时间窗主导增长指数、Courant 数、原胞数、FFT 点数、原生频率间隔和 Hann 窗增益。可选 `returnTemporalSamples=true` 才返回两组初态的完整同相位复电场样本。
 - 主导增长指数来自两组完备初态总振幅后半窗的对数线性拟合。它在足够长的 k-gap 记录中近似正增长支 `max Im(omega*T)`；通带的小残差只作诊断，不能替代复 Floquet 两支求解，也不能把 FFT 谱宽解释成虚部。
-- 论文复现入口已改为直接记录 D 的单精度空间 ROI，不再保存全域双精度 E 后重复计算 `D=epsilon*E`。原先与根目录 SHA-256 完全一致的 9 个模板副本随后从 `reproduction/` 删除；三个复现入口通过 `use_root_templates.m` 把根目录置于搜索路径首位，以 `which()` 强制验证实际求解器，并把绝对路径写入返回结构体 `templateSource`。
+- 论文复现入口已改为直接记录 D 的单精度空间 ROI，不再保存全域双精度 E 后重复计算 `D=epsilon*E`。原先与根目录 SHA-256 完全一致的 9 个模板副本随后从 `topology_aspect/` 删除；三个复现入口通过 `use_root_templates.m` 把根目录置于搜索路径首位，以 `which()` 强制验证实际求解器，并把绝对路径写入返回结构体 `templateSource`。
 - MATLAB R2026a 回归中，论文图 2 的 D-only ROI 为 `2501 x 3251` single，Courant 数 `0.374741`；通带最大对数幅度 `0.485258`，k-gap FDTD/TMM 的 60 周期对数增长为 `29.7926/29.8726`。FDTD–FFT 的 `782` 个稳定通带峰位误差中位数/最大值为 `0.00223/0.0375 Omega`；`111` 个 Yee-TMM 带隙增长样本的 `|Delta Im(omega*T)|` 中位数/最大值为 `0.00114/0.0482`。
