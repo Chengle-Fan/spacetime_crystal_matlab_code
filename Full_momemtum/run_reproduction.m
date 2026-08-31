@@ -8,7 +8,7 @@ options = struct();
 options.quick = false;
 options.runFields = true;
 options.runPhaseMap = true;
+options.runFftBands = true;
 options.saveOutputs = true;
 
 results = reproduce_figures_2_3(options); %#ok<NASGU>
-

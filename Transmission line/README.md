@@ -1,6 +1,6 @@
 # Transmission line：时变传输线电路仿真
 
-本目录把根目录的麦克斯韦求解流程重构为离散传输线/LC 网络流程：PWE 与时间 Floquet TMM 求复准频率，有限链 FDTD 求电压/电流场，Bloch 或有限链 x–t FFT 重建实准频率能带。内部单位统一为 SI，相位约定为
+本目录把根目录的麦克斯韦求解流程重构为离散传输线/LC 网络流程：PWE 与时间 Floquet TMM 求复准频率，有限链 FDTD 求电压/电流场，逐 `k_c` 有限宽度高斯波包与固定电压探针重建实准频率响应。内部单位统一为 SI，相位约定为
 
 \[
 \exp(ikx-i\omega t),\qquad \lambda=\exp(-i\omega T),
@@ -16,8 +16,10 @@
 - `tl_pwe_fourier.m`、`tl_pwe_bands.m`：时间 Fourier 系数与 block-Toeplitz PWE。
 - `tl_tmm_bands.m`：固定 Bloch 波数的时间单周期矩阵。
 - `tl_fdtd1d.m`：有限离散链的 Q/Φ leapfrog 推进。
-- `tl_bloch_fft_bands.m`：逐 k、同调制相位采样的无限体 FFT 基准。
-- `tl_xt_fft_bands.m`：有限链 signed x–t FFT、Floquet 折叠和参考支持 ridge。
+- `tl_fdtd_gaussian_k_scan.m`：逐 `k_c` 构造有限宽度复高斯电压波包并调用完整有限链 FDTD。
+- `tl_fdtd_fft_bands.m`：多固定 V 探针时间 FFT、物理频率保留和显式 Floquet 功率折叠。
+- `tl_bloch_fft_bands.m`：逐 k、同调制相位采样的无限周期体辅助基准，不作为实验式主图。
+- `tl_xt_fft_bands.m`：一次端口宽带激励的有限链 signed x–t FFT 诊断工具；横轴语义不同于高斯源中心扫描。
 - `tl_fit_parameters.m`：基于静态色散、阻抗、衰减和锚点的受约束反演接口。
 - `tl_select_components.m`：用户器件目录筛选、SRF 检查和容差回算。
 - `run_tl_pwe.m`、`run_tl_tmm.m`、`run_tl_fdtd_field.m`、`run_tl_fdtd_fft.m`：四个互相独立的示例入口。
@@ -96,21 +98,19 @@ field.branch.IHalf, field.branch.PhiHalf, field.branch.IAtNodeTime
 
 ## FFT 输入约束
 
-有限链 FFT 需要两次独立运行：被测调制链和同源、同端口的无调制（或明确移除周期负载的）参考链。输入结构必须含：
-
-```text
-data, x, t, cellIndex, channelId, channelOffset, observableName
-```
-
-`data` 为 `Nt×Nsample`。每个通道必须在同一组连续单胞中各采一次；`x=cellIndex*a+channelOffset+共同原点`。时间数据采用无重复终点，并满足 `Nt*dt` 是整数个调制周期。默认先变换有符号复 V/I，再取功率；不要默认对 `abs(I).^2` 做 FFT。
+主入口 `run_tl_fdtd_fft` 不再把一次端口脉冲的空间 FFT 波数或无限周期体的 Bloch `k` 冒充实验式逐列激发。它对每个高斯源中心 `k_c` 独立构造具有指定强度 FWHM 的复电压波包，用瞬时单胞模态补全 Q/Φ（CROW 还补全谐振器状态），调用 `tl_fdtd1d` 推进完整有限链，只把多个固定节点的复电压 `V(t)` 交给 FFT：
 
 ```matlab
-fftCfg = struct('cellPeriod',model.cell.a, ...
-    'temporalPeriod',model.modulation.period);
-bands = tl_xt_fft_bands(observation,referenceObservation,fftCfg);
+scan = tl_fdtd_gaussian_k_scan(model,scanCfg);
+bands = tl_fdtd_fft_bands( ...
+    scan.probeSignals,scan.time,scan.k,fftCfg);
 ```
 
-结果同时保留 `rawPower/rawOmega`、第一 Floquet 区 `foldedPower/foldedOmega`、分通道功率、独立参考功率、`sourceSupportMask`、全局/逐列显示归一化和不借助 PWE/TMM 的连续 ridge。零填充只改变显示间距；真实分辨率见 `nativeOmegaResolution` 和 `nativeKResolution`。有限链 ridge 只解释 `Re(omega)`，谱线宽不是 `Im(omega)`。
+时间窗强制采用 `[start,end)` 的无重复端点、至少两个整数调制周期和周期型 Hann 窗。程序先保留完整 Nyquist 区的 `rawOmega/rawPower`，再在未移位整数 DFT bin 上把相差整数倍 Ω 的功率显式累加到 `[-Omega/2,Omega/2)`；奇偶采样数都不依赖 reshape 假设。多个固定 V 探针的功率非相干相加，降低单点位于场节点导致的漏支。
+
+结果同时返回 `foldedPower`、`rawPower`、未归一化 `rawColumnPower`、`activeKMask`、全局/逐列归一化功率和窗/采样元数据。逐列归一化只用于观察峰位；零填充只改变绘图间距，原生归一化频率分辨率仍是 `1/analysisPeriodCount`。横轴是有限波包的中心 `k_c`，每列含宽度约由 FWHM 决定的 Bloch 波数组合，因此只能称为有限源、有限链、有限窗响应，不能当成无限体精确本征值，也不能从线宽读取 `Im(omega)`。
+
+`tl_xt_fft_bands` 仍可分析一次宽带端口激励的 signed x–t 数据，`tl_bloch_fft_bands` 仍可作无限周期体数值回归；两者的横轴与边界条件必须分别标注，不能与上述主图混用。科研使用应分别改变波包 FWHM、探针位置、链长/边界距离、`dt`、分析周期数和零填充因子，确认峰位对前五项收敛且不把零填充误作分辨率提升。
 
 ## 参数反演
 
@@ -144,4 +144,3 @@ report = tl_select_components(model,catalog,struct());
 ## 进入实验参数阶段前仍需的数据
 
 需要补充准确晶格常数与 PCB 层叠、变容管 C(V)/ESR/封装寄生、L/C 的 RF 阻抗与 SRF、未调制样品复 S11/S21、多长度衰减、逐单元复场，以及每单元泵浦幅相/上升沿。缺少这些数据时，本目录可以验证求解器和合成电路，但不能唯一确定实际 R/L/C/G/S。
-

@@ -1,0 +1,264 @@
+function result = tl_fdtd_fft_bands(probeSignals,time,kScan,fftCfg)
+%TL_FDTD_FFT_BANDS Reconstruct finite-chain bands from fixed V(t) probes.
+%
+%   result = tl_fdtd_fft_bands(probeSignals,time,kScan,fftCfg)
+%
+% probeSignals is Nt-by-Nprobe-by-Nk.  A two-dimensional Nt-by-Nk input
+% denotes one probe.  The routine applies an endpoint-free integer-period
+% time gate, a periodic Hann window, a full physical-frequency FFT, and an
+% explicit incoherent power sum of replicas separated by Omega into
+% [-Omega/2,Omega/2).  It never advances a Bloch mode or calls PWE/TMM.
+%
+% Required fftCfg fields: temporalPeriod, analysisTimeRange=[start end].
+% The horizontal coordinate is the Gaussian source centre k_c supplied by
+% the caller.  It is not an exact wave number for every packet component.
+
+if nargin ~= 4 || ~isstruct(fftCfg) || ~isscalar(fftCfg)
+    error('Use tl_fdtd_fft_bands(probeSignals,time,kScan,fftCfg).');
+end
+required = {'temporalPeriod','analysisTimeRange'};
+missing = required(~isfield(fftCfg,required));
+if ~isempty(missing)
+    error('fftCfg is missing field(s): %s.',strjoin(missing,', '));
+end
+
+time = validate_time(time);
+dtRecord = time(2)-time(1);
+kScan = validate_k_scan(kScan);
+nK = numel(kScan);
+probeSignals = validate_signals(probeSignals,numel(time),nK);
+nProbe = size(probeSignals,2);
+
+T = read_positive(fftCfg,'temporalPeriod',[]);
+Omega = 2*pi/T;
+samplesPerPeriodFloat = T/dtRecord;
+samplesPerPeriod = round(samplesPerPeriodFloat);
+if samplesPerPeriod < 2 || abs(samplesPerPeriodFloat-samplesPerPeriod) > ...
+        1e-9*max(1,samplesPerPeriod)
+    error(['The probe sampling interval must be commensurate with the ' ...
+        'modulation period and provide at least two samples per period.']);
+end
+
+[analysisRows,analysisRange,analysisPeriodCount] = ...
+    analysis_gate(time,dtRecord,T,fftCfg.analysisTimeRange);
+nTime = numel(analysisRows);
+if nTime ~= analysisPeriodCount*samplesPerPeriod
+    error('The integer-period analysis gate has an inconsistent sample count.');
+end
+signals = double(probeSignals(analysisRows,:,:));
+
+zeroPaddingFactor = read_integer(fftCfg,'zeroPaddingFactor',4,1);
+dynamicRangeDb = read_positive(fftCfg,'dynamicRangeDb',60);
+activeThreshold = read_fraction_or_zero( ...
+    fftCfg,'activeColumnRelativeThreshold',1e-12);
+returnProbePower = read_logical(fftCfg,'returnProbePower',false);
+returnProbeSignals = read_logical(fftCfg,'returnProbeSignals',false);
+
+sampleIndex = (0:nTime-1).';
+window = 0.5-0.5*cos(2*pi*sampleIndex/nTime);
+nFft = zeroPaddingFactor*nTime;
+windowed = signals.*reshape(window,[],1,1);
+
+% Under exp(i*k*x-i*omega*t), ifft places positive omega on positive bins.
+% Probe powers are added, not complex amplitudes, so a field node at one
+% probe cannot coherently cancel a branch visible at another probe.
+complexSpectrum = ifft(windowed,nFft,1);
+rawProbePowerUnshifted = abs(complexSpectrum).^2;
+rawPowerUnshifted = reshape(sum(rawProbePowerUnshifted,2),nFft,nK);
+
+% Accumulate every sampled physical-frequency replica modulo one Omega.
+% Folding unshifted integer DFT bins avoids odd/even half-zone errors.
+nFold = zeroPaddingFactor*analysisPeriodCount;
+if mod(nFft,nFold) ~= 0 || nFft/nFold ~= samplesPerPeriod
+    error('The FFT and Floquet folding grids are not commensurate.');
+end
+foldedPowerUnshifted = zeros(nFold,nK);
+if returnProbePower
+    foldedProbePowerUnshifted = zeros(nFold,nProbe,nK);
+end
+for rawIndex = 1:nFft
+    foldedIndex = mod(rawIndex-1,nFold)+1;
+    foldedPowerUnshifted(foldedIndex,:) = ...
+        foldedPowerUnshifted(foldedIndex,:)+rawPowerUnshifted(rawIndex,:);
+    if returnProbePower
+        foldedProbePowerUnshifted(foldedIndex,:,:) = ...
+            foldedProbePowerUnshifted(foldedIndex,:,:)+ ...
+            rawProbePowerUnshifted(rawIndex,:,:);
+    end
+end
+
+foldedOrders = (-floor(nFold/2):ceil(nFold/2)-1).';
+foldedIndices = mod(foldedOrders,nFold)+1;
+foldedPower = foldedPowerUnshifted(foldedIndices,:);
+foldedOmega = foldedOrders*Omega/nFold;
+
+rawOrders = (-floor(nFft/2):ceil(nFft/2)-1).';
+rawIndices = mod(rawOrders,nFft)+1;
+rawPower = rawPowerUnshifted(rawIndices,:);
+rawOmega = rawOrders*2*pi/(nFft*dtRecord);
+
+rawColumnPower = max(foldedPower,[],1);
+globalMaximum = max(rawColumnPower);
+if ~isfinite(globalMaximum) || globalMaximum <= 0
+    error('The probe FFT returned empty or non-finite spectral power.');
+end
+activeKMask = isfinite(rawColumnPower) & rawColumnPower > 0 & ...
+    rawColumnPower >= activeThreshold*globalMaximum;
+columnNormalizedPower = zeros(size(foldedPower));
+columnNormalizedPower(:,activeKMask) = ...
+    foldedPower(:,activeKMask)./rawColumnPower(activeKMask);
+globalNormalizedPower = foldedPower/globalMaximum;
+displayFloor = 10^(-dynamicRangeDb/10);
+if displayFloor == 0
+    error('fftCfg.dynamicRangeDb exceeds double-precision display range.');
+end
+spectrumDb = -dynamicRangeDb*ones(size(foldedPower));
+spectrumDb(:,activeKMask) = 10*log10(max( ...
+    columnNormalizedPower(:,activeKMask),displayFloor));
+
+result.k = kScan;
+result.foldedOmega = foldedOmega;
+result.omegaOverOmega = foldedOmega/Omega;
+result.spectrumDb = spectrumDb;
+result.foldedPower = foldedPower;
+result.rawColumnPower = rawColumnPower;
+result.activeKMask = activeKMask;
+result.columnNormalizedPower = columnNormalizedPower;
+result.globalNormalizedPower = globalNormalizedPower;
+result.rawOmega = rawOmega;
+result.rawOmegaOverOmega = rawOmega/Omega;
+result.rawPower = rawPower;
+result.probeCount = nProbe;
+result.recordTimeStep = dtRecord;
+result.samplesPerPeriod = samplesPerPeriod;
+result.analysisTimeRange = analysisRange;
+result.analysisRows = analysisRows;
+result.analysisPeriodCount = analysisPeriodCount;
+result.temporalPeriod = T;
+result.nFft = nFft;
+result.nFoldedFrequency = nFold;
+result.nativeOmegaResolution = 2*pi/(nTime*dtRecord);
+result.nativeOmegaResolutionNormalized = 1/analysisPeriodCount;
+result.zeroPaddedOmegaSpacing = 2*pi/(nFft*dtRecord);
+result.displayOmegaSpacingNormalized = 1/nFold;
+result.window = struct('name','periodic-hann', ...
+    'coherentGain',mean(window), ...
+    'energyGain',mean(window.^2), ...
+    'enbwBins',mean(window.^2)/mean(window)^2);
+result.activeColumnRelativeThreshold = activeThreshold;
+result.fftConfig = fftCfg;
+result.interpretation = ['Finite-chain, finite-source, finite-window real-' ...
+    'frequency response. Linewidth is not Im(omega).'];
+if returnProbePower
+    result.rawProbePower = rawProbePowerUnshifted(rawIndices,:,:);
+    result.foldedProbePower = ...
+        foldedProbePowerUnshifted(foldedIndices,:,:);
+end
+if returnProbeSignals
+    result.probeSignals = probeSignals;
+    result.time = time;
+end
+end
+
+% -------------------------------------------------------------------------
+function time = validate_time(value)
+if ~isnumeric(value) || ~isvector(value) || numel(value) < 4 || ...
+        ~isreal(value) || any(~isfinite(value))
+    error('time must contain at least four finite real samples.');
+end
+time = value(:);
+steps = diff(time);
+if any(steps <= 0)
+    error('time must be strictly increasing.');
+end
+dt = steps(1);
+if max(abs(steps-dt)) > 1e-9*dt
+    error('time must be uniformly sampled.');
+end
+end
+
+function k = validate_k_scan(value)
+if ~isnumeric(value) || isempty(value) || ~isvector(value) || ...
+        ~isreal(value) || any(~isfinite(value))
+    error('kScan must be a nonempty finite real vector.');
+end
+k = value(:).';
+end
+
+function signals = validate_signals(value,nTime,nK)
+if ~isnumeric(value) || isempty(value) || any(~isfinite(value(:)))
+    error('probeSignals must be a finite nonempty numeric array.');
+end
+if ismatrix(value)
+    if size(value,1) ~= nTime || size(value,2) ~= nK
+        error('A two-dimensional probeSignals input must be Nt-by-Nk.');
+    end
+    signals = reshape(value,nTime,1,nK);
+elseif ndims(value) == 3
+    if size(value,1) ~= nTime || size(value,3) ~= nK
+        error('A three-dimensional probeSignals input must be Nt-by-Nprobe-by-Nk.');
+    end
+    signals = value;
+else
+    error('probeSignals must be Nt-by-Nk or Nt-by-Nprobe-by-Nk.');
+end
+end
+
+function [rows,timeRange,periodCount] = analysis_gate(time,dt,T,value)
+if ~isnumeric(value) || ~isvector(value) || numel(value) ~= 2 || ...
+        ~isreal(value) || any(~isfinite(value)) || value(2) <= value(1)
+    error('fftCfg.analysisTimeRange must contain two increasing finite times.');
+end
+timeRange = value(:).';
+tolerance = 1e-7*dt;
+if timeRange(1) < time(1)-tolerance || timeRange(2) > time(end)+tolerance
+    error('fftCfg.analysisTimeRange lies outside the recorded time range.');
+end
+nodeFloat = (timeRange-time(1))/dt;
+nodes = round(nodeFloat);
+if any(abs(nodeFloat-nodes) > 1e-8)
+    error('Both analysisTimeRange endpoints must lie on the probe time grid.');
+end
+periodCountFloat = (timeRange(2)-timeRange(1))/T;
+periodCount = round(periodCountFloat);
+if periodCount < 2 || abs(periodCountFloat-periodCount) > ...
+        1e-9*max(1,periodCount)
+    error('The FFT analysis gate must span at least two complete periods.');
+end
+% MATLAB row nodes are one-based.  [start,end) excludes the repeated end.
+rows = (nodes(1)+1):nodes(2);
+end
+
+function value = read_positive(cfg,name,defaultValue)
+value = read_scalar(cfg,name,defaultValue);
+if value <= 0, error('fftCfg.%s must be positive.',name); end
+end
+
+function value = read_integer(cfg,name,defaultValue,minimum)
+value = read_scalar(cfg,name,defaultValue);
+if value ~= round(value) || value < minimum
+    error('fftCfg.%s must be an integer not smaller than %d.',name,minimum);
+end
+end
+
+function value = read_fraction_or_zero(cfg,name,defaultValue)
+value = read_scalar(cfg,name,defaultValue);
+if value < 0 || value >= 1
+    error('fftCfg.%s must lie in [0,1).',name);
+end
+end
+
+function value = read_logical(cfg,name,defaultValue)
+if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
+if ~islogical(value) || ~isscalar(value)
+    error('fftCfg.%s must be a logical scalar.',name);
+end
+end
+
+function value = read_scalar(cfg,name,defaultValue)
+if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
+if isempty(value) || ~isnumeric(value) || ~isscalar(value) || ...
+        ~isreal(value) || ~isfinite(value)
+    error('fftCfg.%s must be a finite real scalar.',name);
+end
+end

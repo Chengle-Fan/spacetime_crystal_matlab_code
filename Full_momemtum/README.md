@@ -19,6 +19,7 @@ run_reproduction
 ```matlab
 results = reproduce_figures_2_3(struct( ...
     'quick',true,'runFields',true,'runPhaseMap',true, ...
+    'runFftBands',true, ...
     'saveOutputs',true));
 ```
 
@@ -26,7 +27,8 @@ results = reproduce_figures_2_3(struct( ...
 
 ```matlab
 results = reproduce_figures_2_3(struct( ...
-    'runFields',false,'runPhaseMap',false,'saveOutputs',false));
+    'runFields',false,'runPhaseMap',false,'runFftBands',false, ...
+    'saveOutputs',false));
 ```
 
 ## 从论文录入的参数
@@ -43,17 +45,27 @@ results = reproduce_figures_2_3(struct( ...
 ## 输出与验证内容
 
 - `figure2_bands.png`：SSPP 静态色散，以及三个调制频率下的复 Floquet 带；
+- `figure2_fdtd_fft.png`：三个调制频率下，逐 `k_c` 有限宽度复高斯波包、有限链完整 Q/Φ 推进和多个固定 V 探针得到的实频响应；
 - `figure2_fields.png`：三个调制频率下的有限链电流强度（`|I|^2` 是
   `|Hz|^2` 的电路代理）；
 - `figure3_bands.png`：CROW 静态色散、`Q-kappa` 相图和论文所称的
   700 MHz 全动量带隙检验；
+- `figure3_fdtd_fft.png`：CROW 的有限链多探针 V(t) FFT 响应与一列代表性 V(x,t)；
 - `figure3_fields.png`：三个激励位置的 CROW 谐振支路电流强度；
 - `reproduction_results.mat`：参数、带隙范围、PWE/TMM 误差、场增长率及绘图数据。
 
-每个动态能带都用 PWE 和 TMM 作独立交叉核对；SSPP 以密集 PWE 为主，
+每个理论动态能带都用 PWE 和 TMM 作独立交叉核对；SSPP 以密集 PWE 为主，
 含有限 `Cblock` 的四状态 CROW 则以不会误选低频寄生分支的 TMM 为主。有限链部分
 直接调用 `tl_fdtd1d`，在约 32 ns 开启时间调制并计算到 70 ns。图中的电流
 只是局域磁场的电路代理，不能解释为 PCB 三维全波磁场。
+
+新增 FDTD–FFT 图不复制逐 k 初值或推进代码，而是直接复用传输线模板的
+`tl_fdtd_gaussian_k_scan`、`tl_fdtd1d` 和 `tl_fdtd_fft_bands`。FFT 使用
+`[start,end)` 整数周期、周期型 Hann 窗、多固定 V 探针非相干功率和完整物理频率
+到第一 Floquet 区的显式折叠；同时保存 raw/折叠功率、未归一化列功率、有效列掩码
+和窗/采样元数据。每列主峰先独立从响应谱选出，再与最近 TMM 实频率比较，验证指标
+不会用理论目标反选峰。横轴严格标为高斯源中心 `k_c`，谱线宽不解释为
+`Im(omega)`。
 
 ## 论文未报告的信息与限制
 
@@ -73,3 +85,9 @@ results = reproduce_figures_2_3(struct( ...
 并把这一区别写入结果结构，没有通过暗改参数来隐藏它。因此当前验证结论是：
 模版稳定、不同求解器互相吻合，并能复现 Fig. 2 的定性趋势与 Fig. 3 的强局域
 增长；但仅凭论文已报告参数，不能定量复现其 Fig. 3(f) 的全动量带隙声明。
+
+FDTD–FFT 还包含论文没有报告的激发与测量假设。默认值可通过
+`fftKCount`、`fftAnalysisPeriodCount`、`fftCellCount`、
+`fftPulseIntensityFwhmCells`、`fftProbeOffsets`、`fftZeroPaddingFactor` 覆盖。
+科研使用必须分别检查波包 FWHM、探针位置、链长/边界距离、时间步和分析周期数
+收敛；零填充只细化绘图网格。

@@ -1,7 +1,7 @@
 # 传输线时间调制电路 MATLAB 重构执行方案
 
 > 编制日期：2026-08-31  
-> 当前状态：首版代码已于 2026-08-31 按本方案落盘；P1–P5、参数反演/选件接口和批量验证已实现。实验参数反演仍须等待第 10 节所列实测数据。
+> 当前状态：首版代码已于 2026-08-31 按本方案落盘；P1–P5、参数反演/选件接口和批量验证已实现。随后主 FFT 路径已改为逐 `k_c` 有限链高斯波包与固定 V 探针；本文原先把 x–t FFT 作为主路径的描述由本修订覆盖。实验参数反演仍须等待第 10 节所列实测数据。
 > 根目录代码基线：提交 35756e9；正式实施前应重新记录实际提交号与工作树状态。  
 > 参考论文：B. Huang 等，Observation of full momentum bandgap in photonic time crystals，arXiv:2604.17408v1。
 
@@ -32,12 +32,12 @@
 | 有限样品场入口 | run_fdtd_field.m | run_tl_fdtd_field.m |
 | 时域推进 | fdtd1d.m | tl_fdtd1d.m |
 | FFT 能带入口 | run_fdtd_fft.m | run_tl_fdtd_fft.m |
-| FFT 重建 | fdtd_fft_bands.m | tl_bloch_fft_bands.m（直接镜像）；tl_xt_fft_bands.m（有限链 x–t 扩展） |
+| FFT 重建 | fdtd_gaussian_k_scan.m、fdtd_fft_bands.m | tl_fdtd_gaussian_k_scan.m、tl_fdtd_fft_bands.m；tl_xt_fft_bands.m 与 tl_bloch_fft_bands.m 作为不同协议的诊断工具 |
 
-根目录的 run_fdtd_field 与 run_fdtd_fft 完全独立，后者目前采用逐 k 单胞推进而不是对前者的场数据做空间 FFT。传输线模块继续保持“两个入口互不读取工作区或 MAT 文件”的独立性，但作一项有意扩展：
+根目录与传输线目录的 field/FFT 入口都彼此独立，不读取前一个入口的工作区或 MAT 文件。传输线主 FFT 路径现与根目录的实验式语义一致：
 
-- 主 FFT 路径采用“受论文测量结果启发”的有限链 x–t 二维 FFT 目标。run_tl_fdtd_fft 自己启动一套专用宽带 FDTD，随后调用 tl_xt_fft_bands；具体实验扫描流程须由后续测量协议确定；
-- 另设 tl_bloch_fft_bands，以逐 k Bloch 单胞推进和同相位采样提供无限体基准。它用于验证与暗模诊断，不增加日常入口。
+- 对每个源中心 `k_c` 构造有限强度 FWHM 的复高斯电压波包，用瞬时单胞模态补全 Q/Φ 状态，推进完整有限链，只保留多个固定 V 探针的时间序列；
+- `tl_xt_fft_bands` 保留为一次端口宽带激励的 signed x–t 诊断；`tl_bloch_fft_bands` 保留为无限周期体回归。二者不再定义日常主入口的横轴语义。
 
 这既保持根目录的入口职责，又能直接对接未来逐单元时空测量。
 
@@ -275,7 +275,9 @@ fourier   = tl_pwe_fourier(model,pweCfg);
 pwe       = tl_pwe_bands(fourier,model,kScan,pweCfg);
 tmm       = tl_tmm_bands(model,kScan,tmmCfg);
 field     = tl_fdtd1d(model,fdtdCfg);
-fftBands  = tl_xt_fft_bands(observation,referenceObservation,fftCfg);
+scan      = tl_fdtd_gaussian_k_scan(model,scanCfg);
+fftBands  = tl_fdtd_fft_bands(scan.probeSignals,scan.time,scan.k,fftCfg);
+xTBands   = tl_xt_fft_bands(observation,referenceObservation,xtCfg);
 bulkBands = tl_bloch_fft_bands(model,kScan,blochCfg);
 ~~~
 
@@ -308,8 +310,10 @@ Transmission line/
 ├── run_tl_fdtd_field.m
 ├── tl_fdtd1d.m
 ├── run_tl_fdtd_fft.m
-├── tl_xt_fft_bands.m                          # 主：有限链 x–t FFT
-├── tl_bloch_fft_bands.m                       # 辅：逐 k 无限体 FFT
+├── tl_fdtd_gaussian_k_scan.m                  # 主：有限链逐 k_c 高斯波包
+├── tl_fdtd_fft_bands.m                        # 主：固定 V 探针时间 FFT
+├── tl_xt_fft_bands.m                          # 辅：端口宽带 x–t FFT
+├── tl_bloch_fft_bands.m                       # 辅：逐 k 无限周期体 FFT
 ├── tl_fit_parameters.m                        # 静态/损耗/动态参数反演
 ├── tl_select_components.m                     # 标称值、寄生与容差回算
 └── validate_tl_suite.m                        # Base MATLAB 一键验收
@@ -381,35 +385,28 @@ tl_fdtd1d 在真实离散 LC 链上推进 q/φ，并恢复 V/I：
 
 ### 7.4 FFT 能带
 
-主路径由 run_tl_fdtd_fft 独立创建专用 bandCfg：
+主路径由 run_tl_fdtd_fft 独立创建有限链扫描与 FFT 配置：
 
 ~~~matlab
-bandField = tl_fdtd1d(model,bandCfg);
-referenceField = tl_fdtd1d(referenceModel,referenceCfg);
-observation = tl_make_observation( ...
-    bandField.branch.IAtNodeTime,bandField.branch.x, ...
-    bandField.node.t,bandCfg.cellMap);
-referenceObservation = tl_make_observation( ...
-    referenceField.branch.IAtNodeTime,referenceField.branch.x, ...
-    referenceField.node.t,referenceCfg.cellMap);
-fftBands = tl_xt_fft_bands( ...
-    observation,referenceObservation,fftCfg);
+scan = tl_fdtd_gaussian_k_scan(model,scanCfg);
+fftBands = tl_fdtd_fft_bands( ...
+    scan.probeSignals,scan.time,scan.k,fftCfg);
 ~~~
 
-tl_make_observation 可实现为入口局部函数，不必新增公开文件。referenceModel/referenceCfg 由入口显式定义为同源、同端口的无调制或无周期负载参考，具体选择写入结果；不得由 FFT 内核猜测。
+每列都必须来自一次完整有限链 Q/Φ FDTD；不得用单胞 Bloch 状态的逐 k 推进替代。`k_c` 只是有限谱宽源的中心，不是每个场分量的精确本征波数。
 
 要求：
 
 1. 默认对有符号复 I 或 V 先做变换，再取功率。直接对 |I|² 变换会引入 DC 和二倍频；论文图注 FFT(|Hz|²) 的处理顺序不明确，因此只作为可选对照，不能作为默认科学路径。
-2. 时间门使用无重复端点并覆盖整数个调制周期；空间 ROI 覆盖整数个单胞。分别使用空间窗和周期型时间 Hann 窗，并返回 coherent gain、energy gain、ENBW 和原生 bin 间隔。
-3. 抗混叠检查先于折叠：recordEvery·dt 的 Nyquist 频率必须覆盖全部保留载频/Floquet 边带，单胞采样必须覆盖目标 k，时间窗必须与 T 公度。Floquet 折叠不能挽救采样阶段已经发生的混叠。
-4. 先保留 signed k 与物理频率的 raw 谱，再把等价 bin 的功率求和到 ka∈[−π,π) 和 Re(ω)/Ω∈[−1/2,1/2)，不能只重排索引。
-5. 零填充只细化显示网格，不计入真实分辨率。返回未归一化功率、全局归一化谱、逐 k 显示谱，以及由独立 referenceObservation 得到的源支持掩码；无参考支持的逐列归一化噪声不参与 ridge。
-6. ridge 必须根据源参考谱、显著度和跨窗口连续性独立提取，不能用 PWE/TMM 目标值反选最近峰。
-7. 主 x–t FFT 只验收 Re(ω)。bulk Im(ω) 优先由 PWE/TMM/Bloch 逐 k模式验证；若从有限链估计增长，先投影到固定 k 和单一 ridge/模态，并称为“有限链观测净增长”，因为它还受群速度流出、端口、拍频和多模混合影响。任何谱线宽都不解释为 Im(ω)。
-8. 多节点单胞按 cellIndex 做 Bloch DFT，并使用 channelId/channelOffset 保留各通道谱；非相干功率和只作附加总览，不能覆盖通道分辨结果。
+2. 时间门使用 `[start,end)` 无重复端点并覆盖至少两个整数调制周期；使用周期型时间 Hann 窗，并返回 coherent gain、energy gain、ENBW 和原生 bin 间隔。
+3. 抗混叠检查先于折叠：recordEvery·dt 的 Nyquist 频率必须覆盖全部保留载频/Floquet 边带，时间窗必须与 T 可公度。Floquet 折叠不能挽救采样阶段已经发生的混叠。
+4. 先保留完整物理频率 raw 谱，再在未移位整数 DFT bin 上把相差整数倍 Ω 的功率显式累加到 Re(ω)/Ω∈[−1/2,1/2)，不能只重排一个频率副本。
+5. 多个固定 V 探针先分别取功率再非相干相加；这可降低节点漏支，但不能把不同位置的相位信息伪装成相干测量。
+6. 零填充只细化显示网格，不计入真实分辨率。返回未归一化折叠/raw 功率、`rawColumnPower`、`activeKMask`、全局归一化和逐列显示谱。
+7. 与 PWE/TMM 的验证只能在独立选峰后进行，不能用理论目标反选最近 FFT bin。主图只验收 Re(ω)；有限链响应还受传播流出、边界、拍频和多模混合影响，任何谱线宽都不解释为 Im(ω)。
+8. 必须记录并收敛检查强度 FWHM、探针位置、链长/边界距离、dt 与分析周期数；横轴标成 Gaussian source centre `k_c`。
 
-辅助 tl_bloch_fft_bands 对每个 k 推进单胞内全部状态并在 pT 同相位采样，复用根目录的奇偶频轴、Hann 窗和 Floquet 折叠约定。它用于无限体回归和有限链误差拆分，主有限链响应图仍使用 x–t FFT。
+辅助 `tl_xt_fft_bands` 仍按其独立 reference/source-support 契约处理端口宽带 x–t 数据；`tl_bloch_fft_bands` 仍对每个 k 推进无限周期单胞。两者只用于协议诊断与误差拆分。
 
 ### 7.5 参数反演与实际元件选型
 

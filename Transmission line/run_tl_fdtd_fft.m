@@ -1,79 +1,102 @@
-%RUN_TL_FDTD_FFT Independent finite-chain x-t FFT band reconstruction.
-% This script launches both a modulated run and a same-source, same-port
-% unmodulated reference.  It does not read run_tl_fdtd_field workspace data.
+%RUN_TL_FDTD_FFT Finite-chain Gaussian-packet FDTD/FFT band response.
+% Every horizontal column is an independent finite-chain simulation whose
+% complex voltage packet has centre k_c and a stated intensity FWHM.  Fixed
+% node-voltage probes are transformed independently and their powers are
+% added before explicit Floquet folding.  The result is a source-weighted
+% finite-sample response, not an infinite-bulk eigenspectrum.
 
 clear; clc; close all;
+
+%% Physical finite transmission-line sample
 
 physicalCfg = struct();
 physicalCfg.topology = 'sspp';
 physicalCfg.allowAssumptions = true;
-physicalCfg.cellCount = 96;
+physicalCfg.cellCount = 192;
 model = tl_build_model(physicalCfg);
 
-period = model.modulation.period;
-stepsPerPeriod = max(128,ceil(period/(0.45*model.derived.maximumLeapfrogDt)));
-dt = period/stepsPerPeriod;
-recordPeriods = 16;
-pulseCenter = 0.65*period;
-pulseWidth = 0.12*period;
-sourceVoltage = @(time) ((time-pulseCenter)/pulseWidth).* ...
-    exp(-0.5*((time-pulseCenter)/pulseWidth).^2);
+T = model.modulation.period;
+stepsPerPeriod = max(128,ceil(T/(0.45*model.derived.maximumLeapfrogDt)));
+dt = T/stepsPerPeriod;
+simulationPeriodCount = 16;
+recordEvery = 1;
 
-bandCfg = struct();
-bandCfg.dt = dt;
-bandCfg.nSteps = recordPeriods*stepsPerPeriod;
-bandCfg.recordEvery = 1;
-bandCfg.boundaryType = 'matched';
-bandCfg.modulationEnabled = true;
-bandCfg.precision = 'single';
-bandCfg.source = struct('type','thevenin','node',1, ...
-    'impedance',model.ports.Zsource,'waveformFcn',sourceVoltage);
-bandField = tl_fdtd1d(model,bandCfg);
+%% Gaussian source centres, finite width, and fixed probes
 
-referenceCfg = bandCfg;
-referenceCfg.modulationEnabled = false;
-referenceField = tl_fdtd1d(model,referenceCfg);
+kScan = linspace(0,pi/model.cell.a,81);
+pulseIntensityFwhmCells = 16;
+voltageAmplitude = 1;
+centerNode = round((model.finite.cellCount+1)/2);
+probeOffsets = [-6 -3 0 3 6];
+probeNodeIndices = centerNode+probeOffsets;
+representativeK = 0.65*pi/model.cell.a;
 
-roi = 9:(bandField.grid.branchCount-8);
-timeRows = 1:(numel(bandField.node.t)-1); % remove repeated endpoint phase
-cellIndex = bandField.branch.startNode(roi)-1;
-channelOffset = 0.5*model.cell.a*ones(size(roi));
-observation = struct( ...
-    'data',bandField.branch.IAtNodeTime(timeRows,roi), ...
-    'x',bandField.branch.x(roi), ...
-    't',bandField.node.t(timeRows), ...
-    'cellIndex',cellIndex, ...
-    'channelId',ones(size(roi)), ...
-    'channelOffset',channelOffset, ...
-    'observableName','centered signed series current');
-referenceObservation = observation;
-referenceObservation.data = ...
-    referenceField.branch.IAtNodeTime(timeRows,roi);
+scanCfg = struct();
+scanCfg.kScan = kScan;
+scanCfg.dt = dt;
+scanCfg.nSteps = simulationPeriodCount*stepsPerPeriod;
+scanCfg.recordEvery = recordEvery;
+scanCfg.pulseIntensityFwhmCells = pulseIntensityFwhmCells;
+scanCfg.voltageAmplitude = voltageAmplitude;
+scanCfg.centerNode = centerNode;
+scanCfg.probeNodeIndices = probeNodeIndices;
+scanCfg.targetInitialFrequencyHz = model.modulation.fmHz/2;
+scanCfg.representativeK = representativeK;
+scanCfg.precision = 'single';
+scanCfg.boundaryType = 'open';
+scanCfg.modulationEnabled = true;
+scanCfg.modulationStart = 0;
+scanCfg.modulationEnd = Inf;
+scanCfg.initialTailTolerance = 1e-4;
+scanCfg.requireNoBoundaryArrival = true;
+scanCfg.progressEvery = 10;
+scanResult = tl_fdtd_gaussian_k_scan(model,scanCfg);
+
+%% Endpoint-free integer-period FFT and explicit Floquet folding
 
 fftCfg = struct();
-fftCfg.cellPeriod = model.cell.a;
-fftCfg.temporalPeriod = period;
-fftCfg.zeroPaddingTime = 2;
-fftCfg.zeroPaddingSpace = 2;
+fftCfg.temporalPeriod = T;
+fftCfg.analysisTimeRange = [0 simulationPeriodCount*T];
+fftCfg.zeroPaddingFactor = 4;
 fftCfg.dynamicRangeDb = 60;
-fftCfg.referenceThresholdDb = 45;
-fftCfg.ridgeThresholdDb = 25;
-fftCfg.ridgeCount = 2;
-fftBands = tl_xt_fft_bands(observation,referenceObservation,fftCfg);
+fftCfg.activeColumnRelativeThreshold = 1e-12;
+fftCfg.returnProbePower = false;
+fftCfg.returnProbeSignals = false;
+fftBands = tl_fdtd_fft_bands( ...
+    scanResult.probeSignals,scanResult.time,kScan,fftCfg);
+fftBands.kaOverPi = kScan*model.cell.a/pi;
 
-figure('Color','w','Position',[100 100 900 650]);
+%% Representative real-space field and reconstructed response
+
+representative = scanResult.representativeField;
+figure('Color','w','Position',[100 100 960 620]);
+imagesc(representative.node.x/model.cell.a, ...
+    representative.node.t/T,real(representative.node.V));
+axis xy; colorbar;
+xlabel('node position x/a');
+ylabel('t/T');
+title(sprintf(['Representative finite-chain V(x,t), ' ...
+    'k_c a/\\pi=%.3f'],representative.k*model.cell.a/pi));
+
+figure('Color','w','Position',[120 100 900 650]);
 imagesc(fftBands.kaOverPi,fftBands.omegaOverOmega,fftBands.spectrumDb);
 axis xy;
 ylim([-0.5 0.5]);
 colormap(parula(256));
 colorbar;
 clim([-fftCfg.dynamicRangeDb 0]);
-xlabel('ka/\pi');
+xlabel('Gaussian source centre k_c a/\pi');
 ylabel('Re(\omega)/\Omega');
-title('Finite-chain signed x-t FFT (source-supported column normalization)');
+title('Finite-chain multi-probe V(t) FFT (per-k display normalization)');
 
-fprintf(['x-t FFT complete: %d periods, native Delta(omega/Omega)=%.4g, ' ...
-    'native Delta(ka/pi)=%.4g.  Ridge linewidth is not Im(omega).\n'], ...
-    fftBands.periodCount,fftBands.nativeOmegaResolution/ ...
-    model.modulation.OmegaRadPerSec, ...
-    fftBands.nativeKResolution*model.cell.a/pi);
+fprintf(['FDTD-FFT complete: %d k centres, %d probes, intensity FWHM ' ...
+    '%.3g cells, %d periods. Native Delta(omega/Omega)=%.4g; zero ' ...
+    'padding changes only the plotted spacing.\n'],numel(kScan), ...
+    fftBands.probeCount,pulseIntensityFwhmCells, ...
+    fftBands.analysisPeriodCount, ...
+    fftBands.nativeOmegaResolutionNormalized);
+fprintf(['Boundary audit: tail amplitude %.3g, distance %.3g cells, ' ...
+    'travel scale %.3g cells. Spectrum linewidth is not Im(omega).\n'], ...
+    scanResult.initialEdgeAmplitudeBound, ...
+    scanResult.distanceToBoundary/model.cell.a, ...
+    scanResult.travelDistanceScale/model.cell.a);

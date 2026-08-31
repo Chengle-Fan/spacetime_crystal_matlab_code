@@ -37,6 +37,20 @@ fprintf('Reproducing Fig. 2 SSPP bands with the transmission-line templates.\n')
 fprintf('Reproducing Fig. 3 CROW bands with the transmission-line templates.\n');
 [figure3Bands,figure3BandFigure] = calculate_figure3_bands(options);
 
+if options.runFftBands
+    fprintf(['Reconstructing finite-chain Gaussian-packet FDTD-FFT ' ...
+        'responses for Figs. 2 and 3.\n']);
+    [figure2FftBands,figure2FftFigure] = ...
+        calculate_figure2_fft_bands(options);
+    [figure3FftBands,figure3FftFigure] = ...
+        calculate_figure3_fft_bands(options);
+else
+    figure2FftBands = struct('status','skipped by options.runFftBands');
+    figure3FftBands = struct('status','skipped by options.runFftBands');
+    figure2FftFigure = [];
+    figure3FftFigure = [];
+end
+
 if options.runFields
     fprintf('Running finite-chain FDTD fields through t = 70 ns.\n');
     [figure2Fields,figure2FieldFigure] = ...
@@ -52,11 +66,13 @@ end
 
 results = struct();
 results.paper = paper_snapshot();
-results.assumptions = assumption_snapshot();
+results.assumptions = assumption_snapshot(options);
 results.templateFiles = templateFiles;
 results.options = options;
-results.figure2 = struct('bands',figure2Bands,'fields',figure2Fields);
-results.figure3 = struct('bands',figure3Bands,'fields',figure3Fields);
+results.figure2 = struct('bands',figure2Bands, ...
+    'fdtdFft',figure2FftBands,'fields',figure2Fields);
+results.figure3 = struct('bands',figure3Bands, ...
+    'fdtdFft',figure3FftBands,'fields',figure3Fields);
 results.generatedAt = char(datetime('now','TimeZone','local', ...
     'Format','yyyy-MM-dd HH:mm:ss Z'));
 
@@ -67,6 +83,14 @@ if options.saveOutputs
     exportgraphics(figure3BandFigure, ...
         fullfile(options.outputDirectory,'figure3_bands.png'), ...
         'Resolution',options.imageResolution);
+    if options.runFftBands
+        exportgraphics(figure2FftFigure, ...
+            fullfile(options.outputDirectory,'figure2_fdtd_fft.png'), ...
+            'Resolution',options.imageResolution);
+        exportgraphics(figure3FftFigure, ...
+            fullfile(options.outputDirectory,'figure3_fdtd_fft.png'), ...
+            'Resolution',options.imageResolution);
+    end
     if options.runFields
         exportgraphics(figure2FieldFigure, ...
             fullfile(options.outputDirectory,'figure2_fields.png'), ...
@@ -91,6 +115,7 @@ options = struct();
 options.quick = read_logical(input,'quick',false);
 options.runFields = read_logical(input,'runFields',true);
 options.runPhaseMap = read_logical(input,'runPhaseMap',true);
+options.runFftBands = read_logical(input,'runFftBands',true);
 options.saveOutputs = read_logical(input,'saveOutputs',true);
 options.outputDirectory = read_text(input,'outputDirectory', ...
     fullfile(here,'outputs'));
@@ -105,6 +130,9 @@ if options.quick
     options.phaseKCount = 21;
     options.stepsPerPeriod = 64;
     options.recordEvery = 2;
+    fftKCountDefault = 21;
+    fftAnalysisPeriodsDefault = 6;
+    fftCellCountDefault = 128;
 else
     options.kCount = 121;
     options.pweOrder = 5;
@@ -114,13 +142,38 @@ else
     options.phaseKCount = 31;
     options.stepsPerPeriod = 128;
     options.recordEvery = 2;
+    fftKCountDefault = 61;
+    fftAnalysisPeriodsDefault = 12;
+    fftCellCountDefault = 160;
+end
+options.fftKCount = read_positive_integer( ...
+    input,'fftKCount',fftKCountDefault);
+options.fftAnalysisPeriodCount = read_positive_integer( ...
+    input,'fftAnalysisPeriodCount',fftAnalysisPeriodsDefault);
+options.fftCellCount = read_positive_integer( ...
+    input,'fftCellCount',fftCellCountDefault);
+options.fftPulseIntensityFwhmCells = read_positive( ...
+    input,'fftPulseIntensityFwhmCells',14);
+options.fftZeroPaddingFactor = read_positive_integer( ...
+    input,'fftZeroPaddingFactor',4);
+options.fftProbeOffsets = read_integer_vector( ...
+    input,'fftProbeOffsets',[-6 -3 0 3 6]);
+options.fftInitialTailTolerance = read_fraction( ...
+    input,'fftInitialTailTolerance',1e-4);
+options.fftDynamicRangeDb = read_positive( ...
+    input,'fftDynamicRangeDb',60);
+if options.fftKCount < 3 || options.fftAnalysisPeriodCount < 2 || ...
+        options.fftCellCount < 16
+    error(['FFT reproduction requires fftKCount>=3, ' ...
+        'fftAnalysisPeriodCount>=2, and fftCellCount>=16.']);
 end
 end
 
 % -------------------------------------------------------------------------
 function files = verify_templates(templateDirectory)
 names = {'tl_build_model','tl_pwe_fourier','tl_pwe_bands', ...
-    'tl_tmm_bands','tl_fdtd1d'};
+    'tl_tmm_bands','tl_fdtd1d','tl_fdtd_gaussian_k_scan', ...
+    'tl_fdtd_fft_bands'};
 files = struct();
 for index = 1:numel(names)
     resolved = which(names{index});
@@ -271,6 +324,167 @@ data.static = struct('kaOverPi',k*dynamicModel.cell.a/pi, ...
 data.dynamic = band_summary(dynamicModel,band,check);
 data.phaseMap = phaseMap;
 data.staticBlockShiftHz = finiteFrequency(1)-idealFrequency(1);
+end
+
+% -------------------------------------------------------------------------
+function [data,targetFigure] = calculate_figure2_fft_bands(options)
+paper = paper_snapshot();
+fmList = paper.fig2.fmHz;
+caseCells = cell(1,numel(fmList));
+targetFigure = figure('Color','w','Position',[60 80 1180 410]);
+layout = tiledlayout(targetFigure,1,numel(fmList), ...
+    'TileSpacing','compact','Padding','compact');
+
+for index = 1:numel(fmList)
+    cfg = struct('topology','sspp','allowAssumptions',true, ...
+        'a',paper.fig2.a,'C0',paper.fig2.C0, ...
+        'deltaC',paper.fig2.deltaC,'Ls',paper.fig2.Ls, ...
+        'mutualS',0,'Rs',0,'Gp',0,'fmHz',fmList(index), ...
+        'cellCount',options.fftCellCount);
+    model = tl_build_model(cfg);
+    caseCells{index} = finite_packet_fft_case( ...
+        model,options,fmList(index)/2);
+    targetAxes = nexttile(layout);
+    plot_fdtd_fft_response(targetAxes,caseCells{index},options);
+    title(targetAxes,sprintf('f_m = %.0f MHz',fmList(index)/1e6));
+    if index == 1
+        ylabel(targetAxes,'Re(\omega)/\Omega');
+    end
+end
+cases = [caseCells{:}];
+title(layout,['Fig. 2 finite-chain voltage-probe response; horizontal ' ...
+    'axis is Gaussian source centre k_c']);
+data = struct('cases',cases,'paperParameters',paper.fig2, ...
+    'interpretation',['Finite-chain, finite-packet, finite-window response; ' ...
+    'not the unavailable experimental colormap or exact bulk eigenvalues.']);
+end
+
+% -------------------------------------------------------------------------
+function [data,targetFigure] = calculate_figure3_fft_bands(options)
+paper = paper_snapshot();
+cfg = struct('topology','crow','allowAssumptions',true, ...
+    'a',paper.fig3.a,'Ls',paper.fig3.Ls,'mutualS',0, ...
+    'C0',paper.fig3.C0,'deltaC',paper.fig3.deltaC, ...
+    'L0',paper.fig3.L0,'Cblock',paper.fig3.Cblock, ...
+    'fmHz',paper.fig3.fmHz,'Rs',0,'Gp',0,'R0',0, ...
+    'cellCount',options.fftCellCount);
+model = tl_build_model(cfg);
+caseData = finite_packet_fft_case(model,options,paper.fig3.fcolHz);
+
+targetFigure = figure('Color','w','Position',[60 80 1120 430]);
+layout = tiledlayout(targetFigure,1,2,'TileSpacing','compact', ...
+    'Padding','compact');
+bandAxes = nexttile(layout);
+plot_fdtd_fft_response(bandAxes,caseData,options);
+ylabel(bandAxes,'Re(\omega)/\Omega');
+title(bandAxes,'Finite-chain multi-probe V(t) FFT');
+
+fieldAxes = nexttile(layout);
+representative = caseData.scan.representativeField;
+imagesc(fieldAxes,representative.node.x/model.cell.a, ...
+    representative.node.t/model.modulation.period, ...
+    real(representative.node.V));
+axis(fieldAxes,'xy');
+colorbar(fieldAxes);
+xlabel(fieldAxes,'node position x/a');
+ylabel(fieldAxes,'t/T');
+title(fieldAxes,sprintf('Representative V(x,t), k_c a/\\pi=%.2f', ...
+    representative.k*model.cell.a/pi));
+title(layout,['Fig. 3 finite-chain Gaussian-packet response using the ' ...
+    'reported CROW circuit parameters']);
+
+data = struct('case',caseData,'paperParameters',paper.fig3, ...
+    'interpretation',['Finite-chain voltage response. Spectral linewidth ' ...
+    'does not measure Im(omega).']);
+end
+
+% -------------------------------------------------------------------------
+function caseData = finite_packet_fft_case(model,options,targetFrequencyHz)
+k = linspace(0,pi/model.cell.a,options.fftKCount);
+T = model.modulation.period;
+dt = T/options.stepsPerPeriod;
+centerNode = round((model.finite.cellCount+1)/2);
+probeNodes = centerNode+options.fftProbeOffsets;
+if any(probeNodes < 1) || any(probeNodes > model.finite.cellCount) || ...
+        numel(unique(probeNodes)) ~= numel(probeNodes)
+    error('options.fftProbeOffsets do not define unique in-chain probes.');
+end
+
+scanCfg = struct();
+scanCfg.kScan = k;
+scanCfg.dt = dt;
+scanCfg.nSteps = options.fftAnalysisPeriodCount*options.stepsPerPeriod;
+scanCfg.recordEvery = 1;
+scanCfg.pulseIntensityFwhmCells = ...
+    options.fftPulseIntensityFwhmCells;
+scanCfg.voltageAmplitude = 1;
+scanCfg.centerNode = centerNode;
+scanCfg.probeNodeIndices = probeNodes;
+scanCfg.targetInitialFrequencyHz = targetFrequencyHz;
+scanCfg.representativeK = 0.55*pi/model.cell.a;
+scanCfg.precision = 'single';
+scanCfg.boundaryType = 'open';
+scanCfg.modulationEnabled = true;
+scanCfg.modulationStart = 0;
+scanCfg.modulationEnd = Inf;
+scanCfg.initialTailTolerance = options.fftInitialTailTolerance;
+scanCfg.requireNoBoundaryArrival = true;
+scanCfg.progressEvery = max(1,ceil(options.fftKCount/5));
+scan = tl_fdtd_gaussian_k_scan(model,scanCfg);
+
+fftCfg = struct();
+fftCfg.temporalPeriod = T;
+fftCfg.analysisTimeRange = [0 options.fftAnalysisPeriodCount*T];
+fftCfg.zeroPaddingFactor = options.fftZeroPaddingFactor;
+fftCfg.dynamicRangeDb = options.fftDynamicRangeDb;
+fftCfg.activeColumnRelativeThreshold = 1e-12;
+fftCfg.returnProbePower = false;
+fftCfg.returnProbeSignals = false;
+bands = tl_fdtd_fft_bands(scan.probeSignals,scan.time,k,fftCfg);
+bands.kaOverPi = k*model.cell.a/pi;
+
+tmm = tl_tmm_bands(model,k,struct('temporalSlices',options.tmmSlices));
+[~,dominantIndices] = max(bands.foldedPower,[],1);
+dominantOmega = bands.foldedOmega(dominantIndices).';
+dominantError = nan(1,numel(k));
+for index = find(bands.activeKMask)
+    distance = circular_distance(dominantOmega(index), ...
+        real(tmm.omegaFolded(:,index)),model.modulation.OmegaRadPerSec);
+    dominantError(index) = min(distance)/model.modulation.OmegaRadPerSec;
+end
+validError = dominantError(isfinite(dominantError));
+validation = struct();
+validation.dominantOmega = dominantOmega;
+validation.dominantCircularErrorOverOmega = dominantError;
+validation.medianDominantErrorOverOmega = median(validError);
+validation.maximumDominantErrorOverOmega = max(validError);
+validation.nativeResolutionOverOmega = ...
+    bands.nativeOmegaResolutionNormalized;
+validation.method = ['The dominant response peak is selected without a ' ...
+    'theory target, then compared with the nearest TMM real frequency.'];
+
+scan = rmfield(scan,'probeSignals');
+caseData = struct('bands',bands,'scan',scan,'validation',validation, ...
+    'model',model.snapshot,'targetInitialFrequencyHz',targetFrequencyHz);
+fprintf(['  %s f_m=%.0f MHz FDTD-FFT: median/max dominant error ' ...
+    '%.3g/%.3g Omega, native resolution %.3g Omega.\n'], ...
+    upper(model.kind),model.modulation.fmHz/1e6, ...
+    validation.medianDominantErrorOverOmega, ...
+    validation.maximumDominantErrorOverOmega, ...
+    validation.nativeResolutionOverOmega);
+end
+
+% -------------------------------------------------------------------------
+function plot_fdtd_fft_response(targetAxes,caseData,options)
+imagesc(targetAxes,caseData.bands.kaOverPi, ...
+    caseData.bands.omegaOverOmega,caseData.bands.spectrumDb);
+axis(targetAxes,'xy');
+xlim(targetAxes,[0 1]);
+ylim(targetAxes,[-0.5 0.5]);
+clim(targetAxes,[-options.fftDynamicRangeDb 0]);
+colormap(targetAxes,parula(256));
+colorbar(targetAxes);
+xlabel(targetAxes,'Gaussian source centre k_c a/\pi');
 end
 
 % -------------------------------------------------------------------------
@@ -696,7 +910,7 @@ paper.fig3.Q0 = 20.7;
 end
 
 % -------------------------------------------------------------------------
-function assumptions = assumption_snapshot()
+function assumptions = assumption_snapshot(options)
 assumptions = struct();
 assumptions.aEqualsReportedStripSpacing = true;
 assumptions.mutualInductanceH = 0;
@@ -706,6 +920,12 @@ assumptions.resonatorResistanceOhm = 0;
 assumptions.portImpedanceOhm = 50;
 assumptions.fig2NodeCount = 97;
 assumptions.fig3NodeCount = 33;
+assumptions.fieldNodeCounts = struct('figure2',97,'figure3',33);
+assumptions.fftNodeCount = options.fftCellCount;
+assumptions.fftPulseIntensityFwhmCells = ...
+    options.fftPulseIntensityFwhmCells;
+assumptions.fftProbeOffsets = options.fftProbeOffsets;
+assumptions.fftAnalysisPeriodCount = options.fftAnalysisPeriodCount;
 assumptions.modulationStartSeconds = 32e-9;
 assumptions.finalTimeSeconds = 70e-9;
 assumptions.note = ['The PDF does not report these quantities completely; ' ...
@@ -730,6 +950,21 @@ fprintf(['  Fig. 3, f_m=700 MHz: unstable fraction %.3f, ' ...
     item.check.maximumCircularComplexErrorOverOmega);
 fprintf('  Fig. 3 finite-Cblock static k=0 shift: %.3f MHz.\n', ...
     results.figure3.bands.staticBlockShiftHz/1e6);
+if results.options.runFftBands
+    for index = 1:numel(results.figure2.fdtdFft.cases)
+        item = results.figure2.fdtdFft.cases(index);
+        fprintf(['  Fig. 2 finite-chain FFT, f_m=%.0f MHz: median/max ' ...
+            'dominant-peak error %.3g/%.3g Omega.\n'], ...
+            item.model.modulation.fmHz/1e6, ...
+            item.validation.medianDominantErrorOverOmega, ...
+            item.validation.maximumDominantErrorOverOmega);
+    end
+    item = results.figure3.fdtdFft.case;
+    fprintf(['  Fig. 3 finite-chain FFT: median/max dominant-peak ' ...
+        'error %.3g/%.3g Omega.\n'], ...
+        item.validation.medianDominantErrorOverOmega, ...
+        item.validation.maximumDominantErrorOverOmega);
+end
 end
 
 % -------------------------------------------------------------------------
@@ -739,6 +974,11 @@ names = fieldnames(second);
 for index = 1:numel(names)
     output.(names{index}) = second.(names{index});
 end
+end
+
+% -------------------------------------------------------------------------
+function distance = circular_distance(first,second,period)
+distance = abs(mod(first-second+period/2,period)-period/2);
 end
 
 % -------------------------------------------------------------------------
@@ -777,4 +1017,37 @@ if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
         ~isfinite(value) || value <= 0 || value ~= round(value)
     error('options.%s must be a positive integer.',name);
 end
+end
+
+function value = read_positive(input,name,defaultValue)
+if isfield(input,name) && ~isempty(input.(name))
+    value = input.(name);
+else
+    value = defaultValue;
+end
+if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
+        ~isfinite(value) || value <= 0
+    error('options.%s must be a positive finite real scalar.',name);
+end
+end
+
+function value = read_fraction(input,name,defaultValue)
+value = read_positive(input,name,defaultValue);
+if value >= 1
+    error('options.%s must be smaller than one.',name);
+end
+end
+
+function value = read_integer_vector(input,name,defaultValue)
+if isfield(input,name) && ~isempty(input.(name))
+    value = input.(name);
+else
+    value = defaultValue;
+end
+if ~isnumeric(value) || isempty(value) || ~isvector(value) || ...
+        ~isreal(value) || any(~isfinite(value)) || ...
+        any(value ~= round(value)) || numel(unique(value)) ~= numel(value)
+    error('options.%s must contain unique finite integers.',name);
+end
+value = value(:).';
 end
