@@ -325,10 +325,10 @@
 
 本节记录用户对 PWE 最终用途的进一步收窄；它优先于上文 V3.0 历史验收中关于一般时空晶体、双模式、权重和 TMM 交叉图的旧要求。
 
-- PWE 现在只处理空间均匀、时间周期、`mu_r=1` 的光学时间晶体。`run_pwe.m` 顶部集中设置方波/正弦调制、介电常数范围、占空比或相位、周期、Fourier 截断、采样数和 `k/Omega` 范围。
-- `run_pwe.m` 只调用 `pwe_fourier` 和 `pwe_bands`，只绘制 `Re(omega)/Omega` 与 `Im(omega)/Omega`。已删除一般时空晶体示例、TMM 调用、误差验收、权重着色、保存块和所有辅助分支追踪函数。
+- PWE 现在只处理空间均匀、时间周期、`mu_r=1` 的光学时间晶体。`run_pwe.m` 顶部集中设置方波/正弦调制、介电常数范围、占空比或相位、周期、Fourier 截断、采样数、`k/Omega` 范围以及实部的显示纵轴范围。
+- `run_pwe.m` 只调用 `pwe_fourier` 和 `pwe_bands`，只绘制 `Re(omega)/Omega` 与 `Im(omega)/Omega`：实部由顶部纵轴范围显示完整谱中的副本，虚部按实部最接近 `Omega/4` 的原规则只绘制两条代表根。已删除一般时空晶体示例、TMM 调用、误差验收、权重着色、保存块和所有辅助分支追踪函数。
 - `pwe_fourier(epsFun,pweCfg)` 的最小配置只含 `T/Mtime/Nt`；仍保留 endpoint-free 采样、`Nt >= 4*Mtime+1`、完整 Fourier 差阶、Hermitian/正定检查和正介电常数约束。
-- `pwe_bands(fourier,kScan)` 只求固定 `k -> omega`。输出严格缩减为 `result.k` 与 `result.omega`；不再返回 raw 谱、权重、本征矢、左本征矢、条件数或固定频率模式。Floquet 重复根通过平移代表区选取两条物理分支，再折回标准第一 Floquet 区，不依赖权重或外部理论求解器。
+- `pwe_bands(fourier,kScan)` 只求固定 `k -> omega`。输出严格缩减为 `result.k` 与 `result.omega`；不再返回额外谱字段、权重、本征矢、左本征矢、条件数或固定频率模式。`result.omega` 保留每个 k 点的全部原始 Floquet 本征值，不在求解器内选择分支或折回第一 Floquet 区；`run_pwe.m` 通过顶部的实部纵轴范围选择显示的副本。
 - 三个 PWE 文件总计从约 `957` 行降至 `286` 行，MATLAB R2026a Code Analyzer 均为 `0` 条提示。一次性、非入库对照中，默认方波相对精确二层 TMM 的两分支复频率配对误差中位数/最大值为 `3.361e-3/4.946e-2 Omega`；正弦相对 512 层中点 TMM 为 `5.745e-7/9.972e-6 Omega`。默认方波入口和正弦内核均完整运行。MATLAB R2020a 仍未在本机实跑。
 
 ## 9. TMM 专项修复记录（2026-08-30）

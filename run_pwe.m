@@ -30,9 +30,13 @@ Mtime = 19;            % 保留 -Mtime:Mtime 共 2*Mtime+1 个时间谐波
 Nt = 4096;             % 一个周期内的无重复端点材料采样数
 
 % 波数扫描使用 k/Omega 归一化，其中 Omega=2*pi/T。
-kMinNormalized = -2;
+kMinNormalized = 0;
 kMaxNormalized =  2;
 nK = 301;
+
+% 实部绘图纵轴范围，决定完整 Floquet 本征谱中哪些副本可见。
+% Floquet 副本只沿 Re(omega) 相隔整数倍 Omega。
+realOmegaYLim = [-0.5 0.5];
 
 %% ===================== 构造时间调制材料 =====================
 
@@ -44,7 +48,7 @@ switch lower(modulationType)
         end
         epsFun = @(t) epsLow + (epsHigh-epsLow) .* ...
             (mod(t-timeShift,T) < dutyCycle*T);
-        profileName = '方波光学时间晶体';
+        profileName = '方波调制';
 
     case 'sinusoidal'
         % 用上下界确定平均值和振幅，从而保证介电常数范围仍为
@@ -52,7 +56,7 @@ switch lower(modulationType)
         epsMean = (epsHigh+epsLow)/2;
         epsAmplitude = (epsHigh-epsLow)/2;
         epsFun = @(t) epsMean + epsAmplitude*cos(Omega*t+sinePhase);
-        profileName = '正弦调制光学时间晶体';
+        profileName = '正弦调制';
 
     otherwise
         error('modulationType must be ''square'' or ''sinusoidal''.');
@@ -65,8 +69,8 @@ end
 %% ===================== PWE 能带计算 =====================
 
 % 第一步把 epsilon(t) 转换为 Fourier 卷积矩阵；第二步对每个守恒波数 k
-% 求解广义本征值问题。bands 只包含 k 和两条复准频率 omega。
-pweCfg = struct('T',T,'Mtime',Mtime,'Nt',Nt);
+% 求解广义本征值问题。bands.omega 包含每个 k 点的完整 Floquet 本征谱。
+pweCfg = struct('T',T,'Mtime',Mtime,'Nt',Nt);%Cfg struct store data
 fourier = pwe_fourier(epsFun,pweCfg);
 kNormalized = linspace(kMinNormalized,kMaxNormalized,nK);
 kScan = kNormalized*Omega;
@@ -74,8 +78,17 @@ bands = pwe_bands(fourier,kScan);
 
 %% ===================== 绘制能带实部和虚部 =====================
 
-% 每个波数对应两个准频率根，因此复制横坐标以便统一展开后绘制散点。
-kPlot = repmat(kNormalized,2,1);
+% 每个波数对应完整的截断本征谱，因此复制横坐标以便统一绘制散点。
+kPlot = repmat(kNormalized,size(bands.omega,1),1);
+
+% 虚部沿 Floquet 副本不具周期性，不能用 ylim 选择。保持原来的选根规则：
+% 每个 k 取实部最接近 Omega/4 的两根，并只绘制它们的虚部。
+imagOmega = complex(zeros(2,nK));
+for ik = 1:nK
+    [~,order] = sort(abs(real(bands.omega(:,ik))-Omega/4));
+    imagOmega(:,ik) = bands.omega(order(1:2),ik);
+end
+kImagPlot = repmat(kNormalized,2,1);
 
 figure('Color','w','Position',[100 100 1050 440]);
 layout = tiledlayout(1,2,'TileSpacing','compact','Padding','compact');
@@ -85,11 +98,12 @@ scatter(axReal,kPlot(:),real(bands.omega(:))/Omega,12,'filled');
 xlabel(axReal,'k/\Omega');
 ylabel(axReal,'Re(\omega)/\Omega');
 title(axReal,'准频率实部');
+ylim(axReal,realOmegaYLim);
 grid(axReal,'on');
 box(axReal,'on');
 
 axImag = nexttile(layout);
-scatter(axImag,kPlot(:),imag(bands.omega(:))/Omega,12,'filled');
+scatter(axImag,kImagPlot(:),imag(imagOmega(:))/Omega,12,'filled');
 xlabel(axImag,'k/\Omega');
 ylabel(axImag,'Im(\omega)/\Omega');
 title(axImag,'准频率虚部');

@@ -9,9 +9,9 @@ function result = pwe_bands(fourier, kScan)
 %
 % 其中 W=diag(m*Omega)，Cepsilon 是介电常数的 Fourier 卷积矩阵，
 % mu_r=1。由于时间周期性，同一个物理解可整体平移任意整数倍 Omega，
-% 因而广义本征问题会返回相隔 Omega 的 Floquet 副本。程序从这些原始根
-% 中选出两条物理分支的各一个代表，再把其实部折叠到标准第一时间
-% Floquet 区间 [-Omega/2,Omega/2)。
+% 因而广义本征问题会返回相隔 Omega 的 Floquet 副本。本函数保留并返回
+% 每个 k 点的完整原始本征谱；需要显示哪一个 Floquet 区间由调用者的绘图
+% 纵轴范围决定。
 %
 % 复准频率采用场随时间 exp(-i*omega*t) 演化的约定。因此
 % Im(omega)>0 表示指数增长，Im(omega)<0 表示指数衰减。该函数只负责
@@ -24,8 +24,9 @@ function result = pwe_bands(fourier, kScan)
 %
 % 输出：
 %   result.k     : 1 x nK 的波数扫描行向量；
-%   result.omega : 2 x nK 的复准频率，两行对应两个物理根；其实部位于
-%                  第一 Floquet 区，虚部保持不变。
+%   result.omega : 2*(2*Mtime+1) x nK 的完整原始复本征频率。行顺序来自
+%                  eig，在不同 k 点或简并点之间不保证分支连续性；频率也
+%                  不会折叠到第一 Floquet 区。
 
 if nargin ~= 2 || ~isstruct(fourier) || ~isscalar(fourier)
     error('Use pwe_bands(fourier,kScan).');
@@ -66,30 +67,15 @@ Z = zeros(S);
 W = diag(mList*Omega);
 % 广义本征问题 A*v=omega*B*v 中与 k 无关的右端矩阵。
 B = [Z,I;Cepsilon,Z];
-omega = complex(zeros(2,numel(kScan)));
+omega = complex(zeros(2*S,numel(kScan)));
 
 for ik = 1:numel(kScan)
     % 空间均匀的时间晶体保持波数 k 守恒，因此每个 k 可以独立求解。
     K = kScan(ik)*I;
     A = [K,-W;-W*Cepsilon,K];
-    raw = eig(A,B);
-
-    % Floquet 副本之间相差整数倍 Omega。选取实部最接近 Omega/4 的两个根，
-    % 等价于优先选取平移代表区间 [-Omega/4,3*Omega/4) 内的两条物理根。
-    % 这个区间的边界避开了通常出现动量带隙的 Floquet 区中心和区边界，
-    % 能减少物理根恰好落在代表区边界时的跳选。随后再统一折回标准第一
-    % Floquet 区。整个选择过程不使用本征矢权重，也不借助 TMM 等外部解。
-    [~,order] = sort(abs(real(raw)-Omega/4));
-    selected = raw(order(1:2));
-    omega(:,ik) = fold_frequency(selected,Omega);
+    omega(:,ik) = eig(A,B);
 end
 
 result.k = kScan;
 result.omega = omega;
-end
-
-% -------------------------------------------------------------------------
-% 只对准频率实部进行模 Omega 折叠；虚部代表真实增长/衰减率，不能折叠。
-function folded = fold_frequency(omega,Omega)
-folded = mod(real(omega)+Omega/2,Omega)-Omega/2 + 1i*imag(omega);
 end
