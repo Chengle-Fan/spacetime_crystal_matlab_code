@@ -4,7 +4,7 @@
 
 1. 图 1(b) 的方波时间晶体能带与动量带隙；
 2. 图 2 的体带脉冲和 k-gap 脉冲两种 FDTD 场分布；
-3. 逐 k、有限时间原胞同相位采样得到的 FDTD–FFT 能带图。
+3. 逐 k 高斯波包有限空间 FDTD、固定 E 探针采样和 FFT 折叠得到的能带响应图。
 
 把模板调整为论文复现代码时发现的边界、接口和性能问题，单独记录在 [`TEMPLATE_CODE_FEEDBACK.md`](TEMPLATE_CODE_FEEDBACK.md)，并与论文自身的参数矛盾作了区分。
 
@@ -40,7 +40,7 @@ fdtdBandResult = reproduce_fdtd_band();
 
 - `reproduce_figure1_band.m`：用精确二层 TMM 画蓝色实频通带和灰色动量带隙，不标 Zak 相位。
 - `reproduce_figure2_fdtd.m`：用当前 `fdtd1d.m` 的 D/B-Yee 内核先后计算两个有限脉冲，只生成一张双面板场图。论文画的是 `D`，所以脚本直接记录连续推进变量 D 的单精度空间 ROI，并画 `ln(|D|/D0)`，不再保存全域 E 后重复恢复本构关系。
-- `reproduce_fdtd_band.m`：遍历 `0<=k/k0<=5`，每个 k 只取 64 个有限时间原胞同相位样本，沿原胞序列做 `ifft`，只生成一张第一时间 Floquet 区能带图。TMM 仅在后台计算峰位误差，不叠加到图中。
+- `reproduce_fdtd_band.m`：遍历 `0<=k/k0<=5`；每个中心 k 都构造新的有限宽度高斯 E/H 初值，调用根目录 `fdtd_gaussian_k_scan`/`fdtd1d` 运行有限空间仿真，在 5 个固定位置记录 E(t)，最后调用新 `fdtd_fft_bands` 做完整时间 FFT 与 Floquet 功率折叠。默认生成一张第一时间 Floquet 区响应谱；Yee-TMM 只在后台核对稳定通带的局部谱峰，不叠加曲线。
 
 ## FDTD 数值假设与限制
 
@@ -57,6 +57,18 @@ fdtdBandResult = reproduce_fdtd_band();
 
 这些设置足以做代码实战和定性图形验证，但不能代替正式的 `dz/dt`、计算域、边界距离和脉冲定义收敛研究。普通有限窗 FFT 只能重建 `Re(omega_F)`；k-gap 的指数增长会产生纵向展宽，不能从谱宽直接读取 `Im(omega_F)`。
 
+能带 FFT 的高斯源、探针、空间网格和记录长度并未由论文给出，因此与图 2 的 `45 fs` 脉冲分开登记。默认验证使用 `101` 个中心 k、`16` 个时间周期、每周期 `100` 步、光行时空间步长 `0.04 fs`、长度 `192 fs` 的有限调制样品、强度 FWHM `24 fs` 和 5 个固定 E 探针。波包及指定阈值以上的初始尾场在记录结束前均到不了样品/计算边界。可用可选结构体做收敛，例如：
+
+```matlab
+fine = reproduce_fdtd_band(struct( ...
+    'nK',201,'analysisPeriodCount',24, ...
+    'stepsPerPeriod',160,'dxLightTimeFs',0.025, ...
+    'sampleLengthLightTimeFs',256, ...
+    'pulseIntensityFwhmFs',32));
+```
+
+细化时必须同时满足脚本的 CFL、Nyquist、高斯端面幅度和固定边界传播距离检查，不能只增大时间周期数而保持空间域不变。
+
 ## 初步数值核对
 
 - 图 1 的解析 TMM 图可复现蓝色通带和灰色动量带隙；
@@ -64,8 +76,9 @@ fdtdBandResult = reproduce_fdtd_band();
 - 体带中心 `k/k0≈0.4283` 的精确 Floquet 频率为实数，FDTD 场保持有界并在 PTC 开启、关闭时发生分裂；
 - k-gap 中心 `k/k0≈0.6447` 的精确每周期增长指数为 `Im(omega_F*T)≈0.497877`。60 周期因此预言 `ln(gain)≈29.873`，FDTD 得到 `29.793`，两者相符；
 - 论文正文同时声称 60 周期只放大 `20000` 倍，即 `ln(gain)≈9.903`。这个数值与论文给出的 `epsilon1=3`、`epsilon2=1`、`T=2 fs`、`lambda=0.93 um` 不相容。本复现不通过修改论文参数来强行拟合该倍数；图的色条仍按论文约 `[-1.5,10.5]` 显示，而未截断的真实最大值保存在返回结构体中；
-- FDTD–FFT 图使用 `501` 个波数、`64` 个有限时间原胞和 `256` 点零填充频轴。对 `782` 个 TMM 通带分支样本，峰位误差中位数为 `0.00223 Omega`，最大值为 `0.0375 Omega`（最大误差位于有限窗分辨较差的带边附近）。
-- 修复后的后半窗增长拟合在 `111` 个 Yee-TMM k-gap 内部样本上，`|Delta Im(omega*T)|` 的中位数/最大值为 `0.00114/0.0482`；在论文第一带隙中心附近 `k/k0=0.64`，误差仅约 `1.7e-5`。最大误差仍来自有限 64 原胞窗难以拟合的带边点，不能据此省略原胞数收敛。
+- 新 FDTD–FFT 默认图使用 `101` 个真实有限空间仿真、`1601 x 5 x 101` 个复 E 探针样本和 `64 x 101` 的折叠显示谱，Courant 数为 `0.5`；代表性 k 同时保留完整样品内部 E(x,t)。
+- 对 Yee-TMM 稳定通带中高于 `-20 dB` 的 `137` 个局部强峰，`|Delta omega|/Omega` 的中位数/P90/最大值为 `0.00565/0.03466/0.09194`；把阈值放宽到 `-35 dB` 时得到 `148` 个可见峰，中位数/P90/最大值为 `0.00612/0.02944/0.09194`。这些误差包括有限波包谱宽、探针权重、Hann 主瓣、16 周期频率分辨率和 Yee 色散，不应与旧无限体两状态回归的误差直接比较。
+- 新的固定探针路径不再报告 bulk `Im(omega)` 或“后半窗主导增长率”：有限波包会离开探针，探针振幅同时受群速度、空间包络、有限样品和多模拍频影响。k-gap 的虚部继续由 TMM/PWE 或单模 Bloch 专项方法验证，不能由探针谱宽恢复。
 
 ## 与根目录模板的关系
 
@@ -75,8 +88,10 @@ fdtdBandResult = reproduce_fdtd_band();
 |---|---|---|
 | `reproduce_figure1_band.m` | `tmm_bands.m` | 论文 ε、μ、时间层、k 扫描、归一化和图 1 样式 |
 | `reproduce_figure2_fdtd.m` | `fdtd1d.m`、`tmm_bands.m` | 论文脉冲、有限开启窗口、计算域、记录 ROI 和图 2 样式；TMM 只作增长核对 |
-| `reproduce_fdtd_band.m` | `fdtd_fft_bands.m`、`tmm_bands.m` | 论文 k 扫描、有限时间原胞数、FFT 显示和后台误差统计 |
+| `reproduce_fdtd_band.m` | `fdtd_gaussian_k_scan.m`、`fdtd1d.m`、`fdtd_fft_bands.m`、`tmm_bands.m` | 论文材料与 k 范围；有限样品、波包、探针、FFT 显示和后台局部峰误差统计 |
 
 因此，复现成功验证的是根目录模板数值内核在一组独立论文参数上的科研可用性，而不是某份复制后单独修改的求解器。`VERSION_SOURCE.txt` 仅保留最初建立复现目录时的版本来源记录，其中历史文字不是执行要求。
+
+本次默认验证图保存为 [`fdtd_band_validation.png`](fdtd_band_validation.png)，完整返回结构体保存为忽略版本控制的 `fdtd_band_validation.mat`（约 70 MB）。MAT 文件包含探针原始时间序列、raw/folded 功率谱、代表性时空场、局部峰匹配明细和实际根目录函数路径。
 
 论文来源：E. Lustig, Y. Sharabi, and M. Segev, “Topological aspects of photonic time crystals,” *Optica* **5**, 1390–1395 (2018), DOI: 10.1364/OPTICA.5.001390。
