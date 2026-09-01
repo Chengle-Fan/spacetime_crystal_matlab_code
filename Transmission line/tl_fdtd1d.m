@@ -23,9 +23,13 @@ function field = tl_fdtd1d(model,fdtdCfg)
 %   source.node        node index
 %   source.waveformFcn function handle returning A or V versus time
 %   source.impedance   positive ohms for a Thevenin source
+%   stabilityAudit     exact audit returned by an identical model/topology
+%                      run; bare frequency estimates are never accepted
 %
 % IHalf0/PhiHalf0 are states at t=-dt/2.  IHalf is reported at t+dt/2;
 % IAtNodeTime is the centered average of the adjacent half-time currents.
+% The requested final state is recorded even when recordEvery does not
+% divide nSteps.
 
 if nargin ~= 2 || ~isstruct(model) || ~isscalar(model) || ...
         ~isstruct(fdtdCfg) || ~isscalar(fdtdCfg)
@@ -65,7 +69,19 @@ end
 [incidence,branchStart,branchEnd] = make_incidence(nNode,isPeriodic);
 [Lseries,Lfactor] = make_inductance(model,nBranch,isPeriodic);
 
-omegaMaximum = finite_omega_maximum(model,incidence,Lseries);
+% 有限链最坏电容状态的稠密本征值审计只依赖模型和边界拓扑，不依赖
+% 初值或 k_c。逐 k 波包扫描可以复用一个带完整模型快照的审计对象；
+% 裸标量绝不被接受，避免以性能优化为名绕过稳定性核查。
+if isfield(fdtdCfg,'stabilityAudit') && ~isempty(fdtdCfg.stabilityAudit)
+    [omegaMaximum,stabilityAudit] = validate_stability_audit( ...
+        fdtdCfg.stabilityAudit,model,isPeriodic,nNode,nBranch);
+    stabilityAuditSource = 'validated-reuse';
+else
+    omegaMaximum = finite_omega_maximum(model,incidence,Lseries);
+    stabilityAudit = make_stability_audit( ...
+        omegaMaximum,model,isPeriodic,nNode,nBranch);
+    stabilityAuditSource = 'computed-finite-chain-eigenspectrum';
+end
 stabilityNumber = dt*omegaMaximum;
 if stabilityNumber > 1.8*(1+20*eps)
     error(['FDTD stability check failed: dt*omegaMaximum = %.6g exceeds ' ...
@@ -270,7 +286,9 @@ field.energy = struct('t',nodeTime,'total',energyTotal, ...
 field.grid = struct('nodeCount',nNode,'branchCount',nBranch, ...
     'dt',dt,'nSteps',nSteps,'recordEvery',recordEvery, ...
     'recordSteps',recordSteps,'boundaryType',boundaryType, ...
-    'stabilityNumber',stabilityNumber,'omegaMaximum',omegaMaximum);
+    'stabilityNumber',stabilityNumber,'omegaMaximum',omegaMaximum, ...
+    'stabilityAuditSource',stabilityAuditSource, ...
+    'stabilityAudit',stabilityAudit);
 field.source = source_snapshot(source);
 field.modulation = struct('enabled',modulationEnabled, ...
     'start',modulationStart,'end',modulationEnd);
@@ -321,7 +339,7 @@ nNode = size(B,1);
 nBranch = size(B,2);
 scale = model.finite.amplitudeScaleByCell;
 if isscalar(scale), scale = repmat(scale,nNode,1); end
-Cminimum = model.shunt.C0-model.shunt.deltaC*scale(:);
+Cminimum = model.shunt.totalC0-model.shunt.deltaC*scale(:);
 Cinv = spdiags(1./Cminimum,0,nNode,nNode);
 LinvBt = Lseries\B';
 if strcmp(model.kind,'sspp')
@@ -350,6 +368,44 @@ omegaMaximum = max(abs(roots));
 if ~isfinite(omegaMaximum) || omegaMaximum <= 0
     error('Unable to determine a positive finite-chain frequency bound.');
 end
+end
+
+% -------------------------------------------------------------------------
+function audit = make_stability_audit( ...
+        omegaMaximum,model,isPeriodic,nNode,nBranch)
+audit = struct();
+audit.version = 'tl-fdtd-stability-v1';
+audit.modelSnapshot = model.snapshot;
+audit.isPeriodic = isPeriodic;
+audit.nodeCount = nNode;
+audit.branchCount = nBranch;
+audit.omegaMaximum = omegaMaximum;
+audit.method = ['finite-chain conservative eigenfrequency bound at the ' ...
+    'registered per-node minimum capacitances'];
+end
+
+% -------------------------------------------------------------------------
+function [omegaMaximum,audit] = validate_stability_audit( ...
+        value,model,isPeriodic,nNode,nBranch)
+required = {'version','modelSnapshot','isPeriodic','nodeCount', ...
+    'branchCount','omegaMaximum','method'};
+if ~isstruct(value) || ~isscalar(value) || ...
+        any(~isfield(value,required)) || ...
+        ~strcmp(value.version,'tl-fdtd-stability-v1') || ...
+        ~islogical(value.isPeriodic) || ~isscalar(value.isPeriodic) || ...
+        value.isPeriodic ~= isPeriodic || ...
+        ~isequal(value.nodeCount,nNode) || ...
+        ~isequal(value.branchCount,nBranch) || ...
+        ~isequaln(value.modelSnapshot,model.snapshot) || ...
+        ~isnumeric(value.omegaMaximum) || ...
+        ~isscalar(value.omegaMaximum) || ...
+        ~isreal(value.omegaMaximum) || ...
+        ~isfinite(value.omegaMaximum) || value.omegaMaximum <= 0
+    error(['fdtdCfg.stabilityAudit does not exactly match the current ' ...
+        'model and boundary topology; omit it to recompute the audit.']);
+end
+omegaMaximum = value.omegaMaximum;
+audit = value;
 end
 
 % -------------------------------------------------------------------------
@@ -427,7 +483,7 @@ active = enabled && time >= startTime && time < endTime;
 if active
     C = model.functions.capacitanceFinite(indices,time-startTime);
 else
-    C = model.shunt.C0*ones(numel(indices),1);
+    C = model.shunt.totalC0*ones(numel(indices),1);
 end
 C = C(:);
 end

@@ -1,6 +1,7 @@
 function result = fdtd1d(cfg)
 %FDTD1D  有限一维介质的 D/B-Yee 时域有限差分求解器。
-% 仅处理初值激发与截断空间域；可记录复电场 E 或电位移 D。
+% 仅处理初值激发与截断空间域；可记录复电场 E 或电位移 D。即使
+% recordEvery 不整除 nSteps，也会额外记录用户请求的最终状态。
 
 if nargin ~= 1 || ~isstruct(cfg) || ~isscalar(cfg)
     error('必须以标量结构体 cfg 调用 fdtd1d。');
@@ -253,7 +254,10 @@ end
 
 %% ===================== 记录数组 =====================
 
-recordSteps = 0:recordEvery:nSteps;
+% 即使 recordEvery 不整除 nSteps，也必须保留最终状态。公共内核不应
+% 静默丢弃用户明确请求的仿真终点；需要严格等间隔 FFT 的上层扫描仍会
+% 单独要求整除。
+recordSteps = unique([0:recordEvery:nSteps,nSteps]);
 fieldHistory = complex(zeros(numel(recordSteps), ...
     numel(recordSpatialIndices),recordPrecision));
 tHistory = recordSteps(:)*dt;
@@ -324,6 +328,7 @@ result.(recordField) = fieldHistory;
 result.fieldComponent = recordField;
 result.recordPrecision = recordPrecision;
 result.recordSpatialIndices = recordSpatialIndices;
+result.recordSteps = recordSteps;
 result.fullDomain = [x(1) x(end)];
 result.fullGridPointCount = Nx;
 result.dx = dx;

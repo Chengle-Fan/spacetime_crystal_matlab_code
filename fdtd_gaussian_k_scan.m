@@ -78,6 +78,16 @@ end
 recordEvery = read_optional_integer(cfg,'recordEvery',1,1);
 recordPrecision = read_optional_choice(cfg,'recordPrecision','single', ...
     {'double','single'});
+if isfield(cfg,'zeroKPropagationDirection') && ...
+        ~isempty(cfg.zeroKPropagationDirection)
+    zeroKPropagationDirection = read_finite_real_scalar( ...
+        cfg.zeroKPropagationDirection,'cfg.zeroKPropagationDirection');
+    if ~ismember(zeroKPropagationDirection,[-1 1])
+        error('cfg.zeroKPropagationDirection 必须等于 -1 或 +1。');
+    end
+else
+    zeroKPropagationDirection = 1;
+end
 progressEvery = read_optional_integer(cfg,'progressEvery',max(1,ceil(nK/10)),1);
 if isfield(cfg,'progressLabel') && ~isempty(cfg.progressLabel)
     progressLabel = cfg.progressLabel;
@@ -145,12 +155,20 @@ probeTime = [];
 representativeField = struct();
 xH = x(1:end-1)+dx/2;
 initialSpeed = 1/sqrt(initialEpsilon*muRelative);
+electricEnvelope = exp(-2*log(2)* ...
+    ((x-xCenter)/pulseIntensityFwhm).^2);
+electricCarrierCoordinate = x-xCenter;
+magneticCarrierCoordinate = xH-xCenter;
+propagationDirections = sign(kScan);
+propagationDirections(propagationDirections == 0) = ...
+    zeroKPropagationDirection;
+carrierOmegaYee = zeros(1,nK);
+carrierGroupSpeedYee = zeros(1,nK);
 
 for kIndex = 1:nK
     kCenter = kScan(kIndex);
-    electricEnvelope = exp(-2*log(2)* ...
-        ((x-xCenter)/pulseIntensityFwhm).^2);
-    E0 = fieldAmplitude*electricEnvelope.*exp(1i*kCenter*(x-xCenter));
+    E0 = fieldAmplitude*electricEnvelope.* ...
+        exp(1i*kCenter*electricCarrierCoordinate);
 
     yeeArgument = initialSpeed*dt/dx*sin(abs(kCenter)*dx/2);
     if abs(yeeArgument) >= 1
@@ -158,14 +176,21 @@ for kIndex = 1:nK
             kIndex,kCenter);
     end
     omegaYee = (2/dt)*asin(yeeArgument);
-    propagationSign = sign(kCenter);
+    propagationSign = propagationDirections(kIndex);
+    % 包络半步位移使用与载波一致的 Yee 群速度，而不是连续
+    % 介质相速度。这仍是有限带宽包络的窄带初值，不是精确本征模。
+    groupSpeedYee = initialSpeed*cos(abs(kCenter)*dx/2) / ...
+        cos(omegaYee*dt/2);
     centerAtMinusHalfStep = xCenter- ...
-        propagationSign*initialSpeed*dt/2;
+        propagationSign*groupSpeedYee*dt/2;
     magneticEnvelope = exp(-2*log(2)* ...
         ((xH-centerAtMinusHalfStep)/pulseIntensityFwhm).^2);
     Hhalf0 = propagationSign*sqrt(initialEpsilon/muRelative)* ...
-        fieldAmplitude.*magneticEnvelope.*exp(1i*kCenter*(xH-xCenter)) .* ...
+        fieldAmplitude.*magneticEnvelope.* ...
+        exp(1i*kCenter*magneticCarrierCoordinate) .* ...
         exp(1i*omegaYee*dt/2);
+    carrierOmegaYee(kIndex) = omegaYee;
+    carrierGroupSpeedYee(kIndex) = propagationSign*groupSpeedYee;
 
     if kIndex == representativeKIndex
         recordSpatialIndices = representativeSpatialIndices;
@@ -221,6 +246,10 @@ result.pulseIntensityFwhm = pulseIntensityFwhm;
 result.amplitudeGaussianWidth = amplitudeGaussianWidth;
 result.initialEpsilon = initialEpsilon;
 result.muRelative = muRelative;
+result.propagationDirections = propagationDirections;
+result.zeroKPropagationDirection = zeroKPropagationDirection;
+result.carrierOmegaYee = carrierOmegaYee;
+result.carrierGroupSpeedYee = carrierGroupSpeedYee;
 result.courant = representativeField.courant;
 end
 

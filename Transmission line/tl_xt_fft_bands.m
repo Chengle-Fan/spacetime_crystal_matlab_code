@@ -11,6 +11,9 @@ function result = tl_xt_fft_bands(observation,referenceObservation,fftCfg)
 % source support; this routine never asks PWE/TMM where a peak should lie.
 %
 % Required fftCfg fields: cellPeriod, temporalPeriod.
+% maximumPhysicalOmega optionally limits which raw physical-frequency bins
+% are accumulated during Floquet folding; the complete raw spectrum is
+% still returned for audit.
 
 if nargin ~= 3 || ~isstruct(fftCfg) || ~isscalar(fftCfg)
     error(['Use tl_xt_fft_bands(observation,referenceObservation,' ...
@@ -67,15 +70,21 @@ spaceWindow = periodic_hann(nCell).';
 
 rawOmega = 2*pi*timeOrders/(nFftTime*dt);
 rawK = 2*pi*kOrders/(nFftSpace*a);
+foldingPhysicalFrequencyMask = abs(rawOmega) <= ...
+    maximumPhysicalOmega+128*eps(maximumPhysicalOmega);
+foldingChannelPower = rawChannelPower;
+foldingReferenceChannelPower = referenceRawChannelPower;
+foldingChannelPower(~foldingPhysicalFrequencyMask,:,:) = 0;
+foldingReferenceChannelPower(~foldingPhysicalFrequencyMask,:,:) = 0;
 foldBinCount = round(Omega/(2*pi/(nFftTime*dt)));
 if foldBinCount < 1 || abs(foldBinCount- ...
         zeroPaddingTime*periodCount) > 0
     error('The time grid is not commensurate with the Floquet folding grid.');
 end
 [foldedChannelPower,foldedOrders] = fold_temporal_power( ...
-    rawChannelPower,timeOrders,foldBinCount);
+    foldingChannelPower,timeOrders,foldBinCount);
 [referenceFoldedChannelPower,referenceOrders] = fold_temporal_power( ...
-    referenceRawChannelPower,timeOrders,foldBinCount);
+    foldingReferenceChannelPower,timeOrders,foldBinCount);
 if ~isequal(foldedOrders,referenceOrders)
     error('Internal reference folding mismatch.');
 end
@@ -124,6 +133,7 @@ result.rawPower = rawPower;
 result.rawChannelPower = rawChannelPower;
 result.referenceRawPower = referenceRawPower;
 result.referenceRawChannelPower = referenceRawChannelPower;
+result.foldingPhysicalFrequencyMask = foldingPhysicalFrequencyMask;
 result.foldedOmega = foldedOmega;
 result.omegaOverOmega = foldedOmega/Omega;
 result.foldedPower = foldedPower;
@@ -154,6 +164,12 @@ result.window = struct( ...
     'spaceCoherentGain',mean(spaceWindow), ...
     'spaceEnergyGain',mean(spaceWindow.^2), ...
     'spaceEnbwBins',nCell*sum(spaceWindow.^2)/sum(spaceWindow)^2);
+result.spectralNormalization = struct( ...
+    'name','window-coherent-amplitude-squared', ...
+    'timeComplexAmplitudeScale',nFftTime/sum(timeWindow), ...
+    'spaceComplexAmplitudeScale',1/sum(spaceWindow), ...
+    'powerMeaning','squared coherent amplitude sampled on the k-omega grid', ...
+    'spectralIntegralRequiresBinArea',true);
 result.observationMetadata = obs.metadata;
 result.referenceMetadata = ref.metadata;
 result.fftConfig = fftCfg;
@@ -187,7 +203,8 @@ if ~isnumeric(t) || ~isreal(t) || numel(t) < 4 || any(~isfinite(t)) || ...
     error('%s.t must contain at least four increasing finite samples.',label);
 end
 dt = diff(t);
-if max(abs(dt-dt(1))) > 100*eps(max(1,max(abs(t))))
+timeTolerance = max(1e-9*dt(1),128*eps(max(abs(t))));
+if max(abs(dt-dt(1))) > timeTolerance
     error('%s.t must be uniformly spaced.',label);
 end
 if size(data,1) ~= numel(t)
@@ -301,8 +318,9 @@ if removeMean
 end
 windowed = data.*reshape(timeWindow,[],1,1).* ...
     reshape(spaceWindow,1,[],1);
-spectrum = ifft(windowed,nFftTime,1);
-spectrum = fft(spectrum,nFftSpace,2);
+spectrum = ifft(windowed,nFftTime,1)* ...
+    (nFftTime/sum(timeWindow));
+spectrum = fft(spectrum,nFftSpace,2)/sum(spaceWindow);
 timeOrders = (-floor(nFftTime/2):ceil(nFftTime/2)-1).';
 kOrders = -floor(nFftSpace/2):ceil(nFftSpace/2)-1;
 timeIndices = mod(timeOrders,nFftTime)+1;

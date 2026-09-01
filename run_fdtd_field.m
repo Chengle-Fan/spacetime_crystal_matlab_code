@@ -61,6 +61,7 @@ spongeStrength = 8;
 excitationInput = 'normalized-k';
 kCenterNormalized = 0.70;
 centerWavelength = 1.4;
+zeroKPropagationDirection = 1;  % 仅 k=0 时生效：-1 向左，+1 向右
 
 fieldAmplitude = 1;
 pulseIntensityFwhm = 1.8;  % 强度 |E|^2 的空间 FWHM，不是含糊的宽度参数
@@ -254,6 +255,13 @@ switch excitationInput
         kCenterNormalized = vacuumLightSpeed*kPhysical/Omega;
 end
 kSolver = vacuumLightSpeed*kPhysical;
+if ~isnumeric(zeroKPropagationDirection) || ...
+        ~isscalar(zeroKPropagationDirection) || ...
+        ~isreal(zeroKPropagationDirection) || ...
+        ~isfinite(zeroKPropagationDirection) || ...
+        ~ismember(zeroKPropagationDirection,[-1 1])
+    error('zeroKPropagationDirection 必须等于 -1 或 +1。');
+end
 if abs(kSolver) >= pi/dx
     error('中心波数超过 Yee 空间 Nyquist 上限；请减小 cellSize/pointsPerCell。');
 end
@@ -290,11 +298,18 @@ if abs(yeeArgument) >= 1
 end
 omegaYee = (2/dt)*asin(yeeArgument);
 propagationSign = sign(kSolver);
+if propagationSign == 0
+    propagationSign = zeroKPropagationDirection;
+end
+groupSpeedSolver = initialSpeedSolver*cos(abs(kSolver)*dx/2) / ...
+    cos(omegaYee*dt/2);
 
-% H 位于 t=-dt/2；除载波半时间相位外，高斯中心也按初始群速回退半步。
-initialSpeedPhysical = vacuumLightSpeed/sqrt(epsInitialH*muRelative);
+% H 位于 t=-dt/2；除载波半时间相位外，高斯中心也按 Yee
+% 离散色散的载波群速回退半步。k=0 时由用户显式选择传播方向，
+% 避免 sign(0)=0 把 H 清零并退化成双向分裂初值。
+initialGroupSpeedPhysical = vacuumLightSpeed*groupSpeedSolver;
 centerAtMinusHalfStep = zCenter- ...
-    propagationSign*initialSpeedPhysical*dt/2;
+    propagationSign*initialGroupSpeedPhysical*dt/2;
 magneticEnvelope = exp(-2*log(2)* ...
     ((zH-centerAtMinusHalfStep)/pulseIntensityFwhm).^2);
 Hhalf0 = propagationSign*sqrt(epsInitialH/muRelative)*fieldAmplitude .* ...

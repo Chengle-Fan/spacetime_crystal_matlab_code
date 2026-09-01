@@ -1,83 +1,72 @@
-3.0.1
+3.1.0
 
-V3 (breaking) rewrite of the spacetime-crystal MATLAB package.
-1D, scalar, non-dispersive media in normalized units (c0 = eps0 = mu0 = 1,
-mu_r = 1). Three flat entry scripts at the repo root — run_pwe, run_tmm,
-run_fdtd — with no path setup (no addpath, no startup file). Legacy code is
-recoverable from the git tag legacy-pre-v3-refactor.
+V3.1 scientific-audit release of the spacetime-media MATLAB package.
+Brand name: V3.1.  Semantic package version: 3.1.0.
 
-3.0.1 fixes the V3.0 acceptance failures documented in repair.md.
-run_fdtd Case B is now a true finite-sample benchmark: E(x,t) sampled inside
-the sample-interior measurement ROI, a 2-D FFT ridge cross-check against the
-exact TMM pass bands (Method A ridge), a no-sample reference (incident
-k/Omega coverage + sponge residual backscatter), and a 1/L ridge extrapolation
-over three sample lengths onto a common signed-k grid. The pre-registered
-ridge tolerance (folded-grid quantization spacing, NOT the old periodic
-0.10/0.30) is the acceptance gate; the 1/L residual extrapolated to L -> inf
-is asserted against it as well. The expanding-ROI class (sample minus a FIXED
-10-cell-per-face inset, so the ROI grows with L and spans ~98-99% of the
-sample) is the shipped benchmark. The fixed-central-ROI class — a short central
-ROI cannot separate the bulk plane-wave modes from sample-background stray
-modes and is a DOCUMENTED physical expected-fail, not a gate — together with
-two record durations, two ROI/window classes, the dx/dt grid convergence, and
-the Case C-vs-PWE quantitative comparison live in the one-time regression
-script (kept in /tmp, not shipped, per the flat-tree convention) and are
-disclosed here and in the console, not hidden. The run_fdtd console also
-prints a REPORT-ONLY Case C ridge-vs-PWE comparison: an independent ridge
-(max-power folded bin per active column, noiseFloor-masked) against the PWE
-fundamental band of the infinite crystal (branch closest to the mean-medium
-light line, ridge-independent), median/max vs the same folded-grid + combined
-FFT-linewidth tolerance, with the folded-BZ sign degeneracy resolved as in
-Case B. This Case B gate is the ONLY quantitative acceptance gate in 3.0.1.
-Case A (wave packet) and Case C (double-folded spectrum) are display-only and
-are generated without quantitative acceptance. The Case B eps(t) profile is the weak contrast
-eps 1.3 <-> 1 (see run_fdtd.m header); a strong-contrast binary time crystal
-opens a momentum gap whose parametric growth dominates the finite-time-window
-spectrum before the bands resolve.
+Scope
+-----
+- Root Maxwell templates: PWE, temporal TMM, finite-sample D/B-Yee FDTD,
+  and finite Gaussian-packet/multi-probe FDTD-FFT.
+- Transmission-line templates: one traceable SSPP/CROW circuit model used
+  by PWE, temporal TMM, finite-chain Q/Phi FDTD, and FFT diagnostics.
+- Paper applications: topology_aspect and Full_momemtum.  Both resolve the
+  shared templates explicitly and keep paper data separate from assumptions.
 
-run_pwe and run_tmm now carry asserted analytic checks (acceptance 7.308):
-a uniform-medium check (omega = k/sqrt(eps*mu) recovered to machine
-precision, asserted for BOTH solvers), separate real-part vs in-gap
-growth/decay vs momentum-gap-boundary PWE-vs-TMM comparisons with threshold
-asserts, and the momentum-gap boundary centers compared between PWE and TMM.
+V3.1 physical and numerical hardening
+-------------------------------------
+- The Maxwell and transmission-line FFT main paths remain real finite-space
+  simulations for every source centre k_c.  No Bloch-only or time-only
+  propagation replaces the finite sample in order to save computation.
+- k_c=0 no longer silently creates a zero magnetic/current state.  Maxwell
+  packets use an explicit propagation direction and Yee group speed;
+  zero-frequency SSPP packets use the selected k->0 acoustic impedance limit.
+- Staggered magnetic/current envelopes are placed at t=-dt/2 and use the
+  corresponding discrete Yee/leapfrog carrier frequency and group speed.
+- Fixed-probe FFTs use endpoint-free integer-period gates, periodic Hann
+  windows, full physical-frequency spectra, explicit modulo-Omega power
+  folding, and incoherent multi-probe power addition.  Single-k multi-probe
+  matrices are handled without MATLAB singleton-dimension ambiguity.
+- FFT amplitudes undo MATLAB ifft scaling and the periodic-Hann coherent
+  gain.  Grid-aligned peak power is therefore invariant to zero padding;
+  spectral integrals still require the reported frequency/k bin measure.
+- Zero padding changes display spacing only.  Raw/folded power, column and
+  global normalization, active-column masks, window gains, analysis rows,
+  native resolution, and source/solver metadata remain auditable outputs.
+- fdtd1d always records the requested terminal state, even when recordEvery
+  does not divide nSteps.  Uniform-time tolerances now scale with the actual
+  sampling interval and floating-point time magnitude.
+- Transmission-line Cpar is now an active additive parasitic capacitance in
+  every PWE/TMM/FDTD/fit path; C0 is the nominal modulated contribution.
+  PWE Fourier data must match the exact model snapshot.
+- The expensive finite-chain stability eigenaudit can be reused across a
+  k_c scan only through a validated object containing the exact model and
+  boundary topology.  Every k_c still advances the complete finite chain.
+- A spatially nonuniform finite-chain capacitance now gives the exact
+  requested initial voltage through Q_i=C_i V_i; companion states are
+  explicitly labelled as a centre-local narrow-band approximation.  Modal
+  group velocity follows energy-overlap tracking (with an explicit heuristic
+  warning for lossy non-Hermitian models), and the SSPP zero-k limit must
+  pass a directed-power audit.
+- maximumPhysicalOmega in the auxiliary signed x-t FFT now actually limits
+  the raw bins entering Floquet folding while retaining the full raw spectrum.
+- Full_momemtum reports late-time finite-chain envelope rates as finite-window
+  diagnostics, not as bulk Im(omega), and its plots retain MATLAB R2020a
+  compatibility.
 
-Two 3.0.1 hardening fixes in run_pwe make the PWE-side band selection and
-the in-gap growth/decay gate build-independent:
-  1) Gap-edge branch-selection tie. At a momentum-gap ENTRY column the
-     previous pair is real and the two modes' folded copies cross, so the
-     [growth,decay], [growth,growth] and [decay,decay] continuations have
-     fold-dist costs equal to ~1e-15*Omega — only LAPACK eig rounding decided
-     which pair was "strictly smallest", so the selected in-gap Im signs
-     (and hence the plotted band and the signed assert) varied by build.
-     select_principal_bands now breaks the tie in favor of the physical
-     conjugate pair (one growth, one decay, equal |Im|, |Im| >> machine
-     noise), deterministically.
-  2) Pairing-invariant in-gap comparison. Because the growth/decay sign at a
-     gap entry is a branch-labeling convention, the in-gap assert now takes,
-     per in-gap column, the SMALLER of the two row pairings (identity vs
-     swapped TMM) of the elementwise |Im| error, then the max over columns.
-     A conjugate PWE pair reports its true rate mismatch (unchanged ~2.3e-2);
-     a same-sign (both growth / both decay) selection cannot be paired down
-     and still fails the 0.05 gate. This removes the spurious build
-     dependence of the signed comparison while keeping it strict.
-fdtd1d always computes the sampled 1/sqrt(min_eps*min_mu) bound and
-cross-checks any caller-supplied cfg.maxWaveSpeed against it (a value BELOW
-the estimate is rejected with an error: it would under-state the effective
-Courant number and hide leapfrog instability; a caller-supplied value must be
-a valid UPPER bound on the sampled estimate). fdtd_fft_bands uses only
-base-MATLAB window functions (no Signal Processing Toolbox) and guards
-degenerate ROIs.
+Validation
+----------
+Run validate_v31_suite() for analytic Maxwell checks, temporal-interface and
+FFT edge cases, the complete transmission-line suite, path restoration, and
+whole-repository Code Analyzer.  Use
 
-Base MATLAB only (no Toolbox). Declared minimum R2020a (untested on this
-machine); verified on R2026a.
+  validate_v31_suite(struct('runPaperSmoke',true))
 
-Code Analyzer re-run (R2026a, repair.md 7.320): run_pwe 8 advisory,
-run_tmm 1 advisory, pwe_bands 4 advisory, tmm_bands 0, run_fdtd 2 advisory,
-fdtd_fft_bands 0, fdtd1d 0, pwe_fourier 0. Zero error-severity diagnostics.
-All findings are the known-benign advisory classes, each deliberate:
-CAXIS (clim needs R2022a; caxis kept for R2020a), UDIM/NBRAK2 (style nits),
-UNRCH (the doSave output guard, off by default), DEFNU (save_fig only called
-under doSave), AGROW in pwe_bands (the eigenvector R/L output arrays; the
-analyzer misses the conditional preallocation inside if returnEigenvectors —
-there is no real growth). A dead assignment in run_pwe select_principal_bands
-(S = bands.S, never referenced) was removed in 3.0.1.
+to add quick finite-sample FDTD-FFT smoke tests for both paper directories.
+The suite verifies implementation consistency; it does not replace required
+convergence studies in packet FWHM, probe position, sample/boundary distance,
+dx, dt, analysis duration, component uncertainty, or experimental calibration.
+
+Environment
+-----------
+Base MATLAB only.  Declared minimum R2020a; verified on R2026a Update 3.
+Legacy pre-V3 code remains recoverable from tag legacy-pre-v3-refactor.

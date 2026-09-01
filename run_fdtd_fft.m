@@ -27,6 +27,7 @@ nK = 81;
 
 fieldAmplitude = 1;
 pulseIntensityFwhm = 10;         % 强度 |E|^2 的空间 FWHM
+zeroKPropagationDirection = 1;   % k_c=0 时的单向选择：-1 或 +1
 
 %% ===================== 用户参数：有限样品、时间与探针 =====================
 
@@ -121,6 +122,13 @@ if ~isnumeric(representativeKNormalized) || ...
         ~isreal(representativeKNormalized) || ...
         ~isfinite(representativeKNormalized)
     error('representativeKNormalized 必须是有限实标量。');
+end
+if ~isnumeric(zeroKPropagationDirection) || ...
+        ~isscalar(zeroKPropagationDirection) || ...
+        ~isreal(zeroKPropagationDirection) || ...
+        ~isfinite(zeroKPropagationDirection) || ...
+        ~ismember(zeroKPropagationDirection,[-1 1])
+    error('zeroKPropagationDirection 必须等于 -1 或 +1。');
 end
 if ~islogical(showRepresentativeFieldMap) || ...
         ~isscalar(showRepresentativeFieldMap) || ...
@@ -276,6 +284,7 @@ scanCfg.representativeSpatialIndices = iSampleFirst:iSampleLast;
 scanCfg.representativeK = representativeKNormalized*Omega;
 scanCfg.recordEvery = recordEvery;
 scanCfg.recordPrecision = recordPrecision;
+scanCfg.zeroKPropagationDirection = zeroKPropagationDirection;
 scanCfg.boundaryType = boundaryType;
 scanCfg.spongeCells = spongeCellsForSolver;
 scanCfg.spongeStrength = spongeStrengthForSolver;

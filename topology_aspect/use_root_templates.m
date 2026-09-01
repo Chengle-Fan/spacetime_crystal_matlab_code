@@ -1,7 +1,7 @@
 function [templateSource,pathCleanup] = use_root_templates(requiredFunctions)
 %USE_ROOT_TEMPLATES  让论文复现显式调用仓库根目录的模板求解器。
 % 返回每个实际解析文件的绝对路径；调用者持有 pathCleanup 期间根目录
-% 保持在 MATLAB 搜索路径首位，函数结束时只撤销本函数新增的路径。
+% 保持在 MATLAB 搜索路径首位，函数结束时精确恢复调用前的完整路径顺序。
 
 if ~iscell(requiredFunctions) || isempty(requiredFunctions) || ...
         ~all(cellfun(@(name) ischar(name) && isrow(name) && ~isempty(name), ...
@@ -11,8 +11,8 @@ end
 
 topologyDirectory = fileparts(mfilename('fullpath'));
 rootDirectory = fileparts(topologyDirectory);
-pathEntries = strsplit(path,pathsep);
-rootWasAlreadyOnPath = any(strcmp(pathEntries,rootDirectory));
+originalPath = path;
+pathCleanup = onCleanup(@() path(originalPath));
 
 % 始终把根目录放到搜索路径最前，避免同名外部函数抢先被解析。
 addpath(rootDirectory,'-begin');
@@ -38,14 +38,4 @@ templateSource.resolvedFiles = resolvedFiles;
 templateSource.verification = ...
     '每个求解函数均通过 which() 验证为仓库根目录的唯一模板文件';
 
-if rootWasAlreadyOnPath
-    pathCleanup = onCleanup(@keep_existing_path);
-else
-    pathCleanup = onCleanup(@() rmpath(rootDirectory));
-end
-end
-
-% -------------------------------------------------------------------------
-function keep_existing_path()
-% 根目录原本就在调用者路径中时，不改变调用者的路径状态。
 end

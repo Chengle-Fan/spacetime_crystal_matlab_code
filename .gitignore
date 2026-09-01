@@ -12,6 +12,7 @@ _*
 
 # Generated output (only created by the doSave guards in the entry scripts)
 output/
+outputs/
 
 # System
 *.swp

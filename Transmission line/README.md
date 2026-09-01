@@ -1,5 +1,7 @@
 # Transmission line：时变传输线电路仿真
 
+当前模型与根仓库同步为 **V3.1 / 3.1.0**。
+
 本目录把根目录的麦克斯韦求解流程重构为离散传输线/LC 网络流程：PWE 与时间 Floquet TMM 求复准频率，有限链 FDTD 求电压/电流场，逐 `k_c` 有限宽度高斯波包与固定电压探针重建实准频率响应。内部单位统一为 SI，相位约定为
 
 \[
@@ -51,11 +53,11 @@ physicalCfg = struct('topology','sspp','allowAssumptions',true);
 model = tl_build_model(physicalCfg);
 ```
 
-`topology` 可为 `sspp` 或 `crow`。常用覆盖字段为 `a`、`Ls`、`mutualS`、`Rs`、`C0`、`deltaC`、`Gp`、`fmHz`、`Zsource`、`Zload`、`cellCount`；CROW 另有 `L0`、`R0` 和 `Cblock`。每单元泵浦误差通过 `phaseByCell` 和 `amplitudeScaleByCell` 指定。
+`topology` 可为 `sspp` 或 `crow`。常用覆盖字段为 `a`、`Ls`、`mutualS`、`Rs`、`C0`、`Cpar`、`deltaC`、`Gp`、`fmHz`、`Zsource`、`Zload`、`cellCount`；CROW 另有 `L0`、`R0` 和 `Cblock`。总节点电容定义为 `C(t)=C0+Cpar+deltaC*f(t)`：`C0` 是名义调制支路，`Cpar` 是独立提取的加性寄生。论文所报 `C0` 被视为有效总值，因此论文种子取 `Cpar=0`，另设非零 `Cpar` 时必须避免重复计入寄生。每单元泵浦误差通过 `phaseByCell` 和 `amplitudeScaleByCell` 指定。
 
 内部状态不是直接的 V/I，而是整数时间节点的电荷 Q 和半整数时间支路的磁链 Φ。这样在理想电容时间界面，Q/Φ 连续而 V/I 可以跃变，不会遗漏时变电容的泵浦项。`model.snapshot` 不含函数句柄，可直接随结果归档。
 
-论文种子的两个首要单位回归是：SSPP 的 `Ls-2*S≈37.18 nH`，以及 CROW 的 `1/(2*pi*sqrt(L0*C0))≈314.7 MHz`。
+论文种子的两个首要单位回归是：SSPP 的 `Ls-2*S≈37.18 nH`，以及在默认 `Cpar=0` 时 CROW 的 `1/(2*pi*sqrt(L0*C0))≈314.7 MHz`。
 
 ## PWE 与 TMM
 
@@ -92,13 +94,13 @@ field.branch.x, field.branch.tHalf
 field.branch.IHalf, field.branch.PhiHalf, field.branch.IAtNodeTime
 ```
 
-`IAtNodeTime` 是相邻两个半时间电流的中心平均，允许与节点时间数据共同绘图或做 x–t FFT。内部推进始终为 double，`precision='single'` 只压缩历史数组。稳定性强制 `dt*omegaMaximum<=1.8`。`field.energy` 给出源功、泵浦功、R/G 耗散、端口耗散和数值账本残差。
+`IAtNodeTime` 是相邻两个半时间电流的中心平均，允许与节点时间数据共同绘图或做 x–t FFT。内部推进始终为 double，`precision='single'` 只压缩历史数组。稳定性强制 `dt*omegaMaximum<=1.8`。逐 `k_c` 扫描只复用带完整模型快照和边界拓扑的 `stabilityAudit`，不会省略任何有限链推进。`open` 表示电路开路端，并非无反射空间边界；`matched` 只是按给定端口阻抗加终端电导。`field.energy` 给出源功、泵浦功、R/G 耗散、端口耗散和数值账本残差。
 
 `I` 只是局域磁场的电路代理，`V` 只是电场代理；两者不等于 PCB 的三维全波场。
 
 ## FFT 输入约束
 
-主入口 `run_tl_fdtd_fft` 不再把一次端口脉冲的空间 FFT 波数或无限周期体的 Bloch `k` 冒充实验式逐列激发。它对每个高斯源中心 `k_c` 独立构造具有指定强度 FWHM 的复电压波包，用瞬时单胞模态补全 Q/Φ（CROW 还补全谐振器状态），调用 `tl_fdtd1d` 推进完整有限链，只把多个固定节点的复电压 `V(t)` 交给 FFT：
+主入口 `run_tl_fdtd_fft` 不再把一次端口脉冲的空间 FFT 波数或无限周期体的 Bloch `k` 冒充实验式逐列激发。它对每个高斯源中心 `k_c` 独立构造具有指定强度 FWHM 的复电压波包，用波包中心处的瞬时局域单胞模态补全 Q/Φ（CROW 还补全谐振器状态），调用 `tl_fdtd1d` 推进完整有限链，只把多个固定节点的复电压 `V(t)` 交给 FFT。若 `phaseByCell/amplitudeScaleByCell` 使初始电容非均匀，代码仍用每节点实际电容令 `Q_i=C_iV_i`，保证指定的 `V(x,0)` 精确成立，同时警告其余伴随状态只是中心局域窄带近似。无损模型的群速度在邻近 k 用电路能量内积连续跟踪同一模态；有损模型会明确标记这只是右本征矢连续性启发式，例外点附近应改用端口激励或双正交分析。半时间电流包络再按离散 leapfrog 群速度回退半步；SSPP 的 `k_c=0` 模式用 `zeroKPropagationDirection` 指定的 `k→0` 阻抗极限并核查定向功率，若有损/过阻尼模型没有可分辨传播方向则拒绝伪造“单向”初值：
 
 ```matlab
 scan = tl_fdtd_gaussian_k_scan(model,scanCfg);
@@ -108,9 +110,9 @@ bands = tl_fdtd_fft_bands( ...
 
 时间窗强制采用 `[start,end)` 的无重复端点、至少两个整数调制周期和周期型 Hann 窗。程序先保留完整 Nyquist 区的 `rawOmega/rawPower`，再在未移位整数 DFT bin 上把相差整数倍 Ω 的功率显式累加到 `[-Omega/2,Omega/2)`；奇偶采样数都不依赖 reshape 假设。多个固定 V 探针的功率非相干相加，降低单点位于场节点导致的漏支。
 
-结果同时返回 `foldedPower`、`rawPower`、未归一化 `rawColumnPower`、`activeKMask`、全局/逐列归一化功率和窗/采样元数据。逐列归一化只用于观察峰位；零填充只改变绘图间距，原生归一化频率分辨率仍是 `1/analysisPeriodCount`。横轴是有限波包的中心 `k_c`，每列含宽度约由 FWHM 决定的 Bloch 波数组合，因此只能称为有限源、有限链、有限窗响应，不能当成无限体精确本征值，也不能从线宽读取 `Im(omega)`。
+结果同时返回 `foldedPower`、`rawPower`、未归一化 `rawColumnPower`、`activeKMask`、全局/逐列归一化功率和窗/采样元数据。所有 FFT 功率使用周期 Hann 的相干振幅校正；格点复指数的峰值不随零填充因子改变，连续谱积分则必须乘相应的频率 bin 宽（x–t 谱乘 k–ω bin 面积）。逐列归一化只用于观察峰位；零填充只改变绘图间距，原生归一化频率分辨率仍是 `1/analysisPeriodCount`。横轴是有限波包的中心 `k_c`，每列含宽度约由 FWHM 决定的 Bloch 波数组合，因此只能称为有限源、有限链、有限窗响应，不能当成无限体精确本征值，也不能从线宽读取 `Im(omega)`。
 
-`tl_xt_fft_bands` 仍可分析一次宽带端口激励的 signed x–t 数据，`tl_bloch_fft_bands` 仍可作无限周期体数值回归；两者的横轴与边界条件必须分别标注，不能与上述主图混用。科研使用应分别改变波包 FWHM、探针位置、链长/边界距离、`dt`、分析周期数和零填充因子，确认峰位对前五项收敛且不把零填充误作分辨率提升。
+`tl_xt_fft_bands` 仍可分析一次宽带端口激励的 signed x–t 数据；其可选 `maximumPhysicalOmega` 只限制进入 Floquet 折叠的 raw 频率 bin，完整 raw 谱仍保留。`tl_bloch_fft_bands` 仍可作无限周期体数值回归。两者的横轴与边界条件必须分别标注，不能与上述主图混用。科研使用应分别改变波包 FWHM、探针位置、链长/边界距离、`dt`、分析周期数和零填充因子，确认峰位对前五项收敛且不把零填充误作分辨率提升。
 
 ## 参数反演
 
@@ -139,7 +141,7 @@ catalog.capacitors = struct( ...
 report = tl_select_components(model,catalog,struct());
 ```
 
-`value` 对电感用 H，对电容/变容管用 F；`toleranceFraction=0.05` 表示 ±5%。筛选只把满足 `srfHz >= srfSafetyFactor*maximumFrequencyHz` 的候选纳入最近标称值比较，并至少运行 1000 个固定种子容差样本。有效 `C0` 包含变容管、偏置、焊盘和其他寄生，不能直接用一只最近值电容替代。
+`value` 对电感用 H，对电容/变容管用 F；`toleranceFraction=0.05` 表示 ±5%。筛选只把满足 `srfHz >= srfSafetyFactor*maximumFrequencyHz` 的候选纳入最近标称值比较，并至少运行 1000 个固定种子容差样本。`C0` 与 `Cpar` 都是去嵌后的等效量，不能直接用一只最近值电容替代；如果输入的 `C0` 已包含焊盘、偏置和封装寄生，就必须保持 `Cpar=0`。
 
 ## 进入实验参数阶段前仍需的数据
 

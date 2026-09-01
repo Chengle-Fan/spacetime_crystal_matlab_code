@@ -99,6 +99,7 @@ title(layout,'论文图 2：有限时长光学时间晶体中的电位移场');
 %% ===================== 返回复现数据与诊断量 =====================
 
 result.paperParameters = paper;
+result.packageVersion = '3.1.0';
 result.gridParameters = grid;
 result.band = bandCase;
 result.gap = gapCase;

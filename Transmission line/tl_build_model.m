@@ -14,7 +14,7 @@ function model = tl_build_model(physicalCfg)
 %
 % Common optional overrides:
 %   allowAssumptions    logical scalar (default false)
-%   a, Ls, mutualS, Rs, C0, deltaC, Gp
+%   a, Ls, mutualS, Rs, C0, deltaC, Gp, Cpar
 %   fmHz, modulationPhase, modulationType, dutyCycle
 %   Zsource, Zload, cellCount, phaseByCell, amplitudeScaleByCell
 %
@@ -23,7 +23,9 @@ function model = tl_build_model(physicalCfg)
 %
 % The prescribed capacitance is linear and independent of signal voltage.
 % Device C-V nonlinearity must be calibrated separately before replacing
-% model.modulation.bulkFcn/finiteFcn.
+% model.functions.capacitanceBulk/capacitanceFinite.  C0 is the nominal
+% modulated contribution and Cpar is a static additive parasitic, so the
+% unmodulated total is model.shunt.totalC0=C0+Cpar.
 
 if nargin ~= 1 || ~isstruct(physicalCfg) || ~isscalar(physicalCfg)
     error('Use tl_build_model with one scalar physicalCfg struct.');
@@ -32,14 +34,15 @@ topology = read_text(physicalCfg,'topology','',{'sspp','crow'});
 allowAssumptions = read_logical(physicalCfg,'allowAssumptions',false);
 
 seed = paper_seed(topology);
-assumedFields = {'a','Ls','mutualS','Rs','Gp','Zsource','Zload'};
+assumedFields = {'a','Ls','mutualS','Rs','Gp','Cpar','Zsource','Zload'};
 if strcmp(topology,'crow')
     assumedFields = [assumedFields,{'R0'}];
 end
 assumptionPresent = false(size(assumedFields));
 for assumptionIndex = 1:numel(assumedFields)
+    fieldName = assumedFields{assumptionIndex};
     assumptionPresent(assumptionIndex) = ...
-        isfield(physicalCfg,assumedFields{assumptionIndex});
+        isfield(physicalCfg,fieldName) && ~isempty(physicalCfg.(fieldName));
 end
 missingAssumptions = assumedFields(~assumptionPresent);
 if ~allowAssumptions && ~isempty(missingAssumptions)
@@ -56,6 +59,7 @@ C0 = read_positive(physicalCfg,'C0',seed.C0);
 deltaC = read_nonnegative(physicalCfg,'deltaC',seed.deltaC);
 Gp = read_nonnegative(physicalCfg,'Gp',seed.Gp);
 Cpar = read_nonnegative(physicalCfg,'Cpar',0);
+totalC0 = C0+Cpar;
 fmHz = read_positive(physicalCfg,'fmHz',seed.fmHz);
 phase = read_finite_real(physicalCfg,'modulationPhase',0);
 modulationType = read_text(physicalCfg,'modulationType','sinusoidal', ...
@@ -97,11 +101,11 @@ end
 
 Omega = 2*pi*fmHz;
 T = 1/fmHz;
-capMin = C0-deltaC;
-capMax = C0+deltaC;
+capMin = totalC0-deltaC;
+capMax = totalC0+deltaC;
 if strcmp(modulationType,'square')
-    capMin = C0-deltaC;
-    capMax = C0+deltaC;
+    capMin = totalC0-deltaC;
+    capMax = totalC0+deltaC;
 end
 
 if strcmp(topology,'sspp')
@@ -119,12 +123,14 @@ else
 end
 
 model.kind = topology;
-model.version = '0.1.0';
+model.version = '3.1.0';
+model.schemaVersion = '1.0.0';
 model.units = 'SI';
 model.phaseConvention = 'exp(i*k*x-i*omega*t)';
 model.cell = struct('a',a,'reportedStripSpacing',seed.reportedW);
 model.series = struct('Ls',Ls,'Rs',Rs,'mutualS',mutualS);
-model.shunt = struct('C0',C0,'deltaC',deltaC,'Gp',Gp,'Cpar',Cpar);
+model.shunt = struct('C0',C0,'deltaC',deltaC,'Gp',Gp,'Cpar',Cpar, ...
+    'totalC0',totalC0);
 model.resonator = struct('L0',L0,'R0',R0,'Cblock',Cblock);
 model.ports = struct('Zsource',Zsource,'Zload',Zload);
 model.bulk = struct('stateDimension',stateDimension, ...
@@ -142,23 +148,23 @@ model.paper = struct('Vdc',seed.Vdc,'CvarAtBias',seed.Cvar, ...
 model.provenance = make_provenance(seed,physicalCfg,topology);
 
 model.functions.capacitanceBulk = @(t) bulk_capacitance( ...
-    t,C0,deltaC,Omega,phase,modulationType,dutyCycle);
+    t,C0,Cpar,deltaC,Omega,phase,modulationType,dutyCycle);
 model.functions.capacitanceFinite = @(cellIndex,t) finite_capacitance( ...
-    cellIndex,t,C0,deltaC,Omega,phase,modulationType,dutyCycle, ...
+    cellIndex,t,C0,Cpar,deltaC,Omega,phase,modulationType,dutyCycle, ...
     phaseByCell,amplitudeScaleByCell);
 model.functions.bulkMatrices = @(k) bulk_matrices( ...
     k,a,Ls,mutualS,Rs,Gp,topology,L0,R0,Cblock);
 model.functions.bulkStateMatrix = @(k,t) bulk_state_matrix( ...
     k,t,a,Ls,mutualS,Rs,Gp,topology,L0,R0,Cblock, ...
-    C0,deltaC,Omega,phase,modulationType,dutyCycle);
+    C0,Cpar,deltaC,Omega,phase,modulationType,dutyCycle);
 model.functions.observableMatrix = @(k,t) observable_matrix( ...
     k,t,a,Ls,mutualS,topology,L0,Cblock, ...
-    C0,deltaC,Omega,phase,modulationType,dutyCycle);
+    C0,Cpar,deltaC,Omega,phase,modulationType,dutyCycle);
 
 omegaMax = estimate_omega_max(model,capMin);
-boundaryAcoustic = 2/sqrt((Ls-2*mutualS)*C0);
+boundaryAcoustic = 2/sqrt((Ls-2*mutualS)*totalC0);
 if strcmp(topology,'crow')
-    omegaCol = 1/sqrt(L0*C0);
+    omegaCol = 1/sqrt(L0*totalC0);
     boundaryProvisional = sqrt(omegaCol^2+boundaryAcoustic^2);
 else
     omegaCol = 0;
@@ -170,8 +176,8 @@ model.derived.maximumLeapfrogDt = 1.8/omegaMax;
 model.derived.fcolHz = omegaCol/(2*pi);
 model.derived.provisionalBoundaryFrequencyHz = ...
     boundaryProvisional/(2*pi);
-model.derived.Zreference = sqrt(Ls/C0);
-model.derived.longWaveVelocity = a/sqrt((Ls+2*mutualS)*C0);
+model.derived.Zreference = sqrt(Ls/totalC0);
+model.derived.longWaveVelocity = a/sqrt((Ls+2*mutualS)*totalC0);
 model.derived.effectiveBoundaryInductance = Ls-2*mutualS;
 
 snapshot = model;
@@ -194,6 +200,7 @@ if strcmp(topology,'sspp')
     seed.mutualS = 0;
     seed.Rs = 0;
     seed.Gp = 0;
+    seed.Cpar = 0;
     seed.L0 = NaN;
     seed.R0 = NaN;
     seed.Cblock = NaN;
@@ -210,6 +217,7 @@ else
     seed.mutualS = 0;
     seed.Rs = 0;
     seed.Gp = 0;
+    seed.Cpar = 0;
     seed.L0 = 9.2e-9;
     seed.R0 = 0;
     seed.Cblock = 200e-12;
@@ -232,6 +240,9 @@ provenance.deltaC = provenance_item(seed.deltaC,'capacitance modulation', ...
     'PDF pp. 5/8','paper-given','unknown/not-reported');
 provenance.Gp = provenance_item(seed.Gp,'not reported', ...
     'none','assumption','unknown/not-reported');
+provenance.Cpar = provenance_item(seed.Cpar, ...
+    'not separately reported; paper C0 is treated as effective total', ...
+    'none','assumption','unknown/not-reported');
 provenance.fmHz = provenance_item(seed.fmHz,'modulation frequency', ...
     'PDF pp. 5-8','paper-given','unknown/not-reported');
 provenance.Zsource = provenance_item(50,'not reported; 50 ohm seed', ...
@@ -250,7 +261,7 @@ end
 names = fieldnames(provenance);
 for iname = 1:numel(names)
     name = names{iname};
-    if isfield(cfg,name)
+    if isfield(cfg,name) && ~isempty(cfg.(name))
         item = provenance.(name);
         item.value = cfg.(name);
         item.source = ['physicalCfg.' name];
@@ -278,16 +289,16 @@ item = struct('value',value,'source',source,'location',location, ...
 end
 
 % -------------------------------------------------------------------------
-function C = bulk_capacitance(t,C0,deltaC,Omega,phase,type,duty)
+function C = bulk_capacitance(t,C0,Cpar,deltaC,Omega,phase,type,duty)
 if ~isnumeric(t) || ~isreal(t) || any(~isfinite(t),'all')
     error('Capacitance time input must contain finite real values.');
 end
 switch type
     case 'sinusoidal'
-        C = C0+deltaC*cos(Omega*t+phase);
+        C = C0+Cpar+deltaC*cos(Omega*t+phase);
     case 'square'
         high = mod(Omega*t+phase,2*pi) < 2*pi*duty;
-        C = C0+deltaC*(2*double(high)-1);
+        C = C0+Cpar+deltaC*(2*double(high)-1);
 end
 if any(~isfinite(C),'all') || any(C <= 0,'all')
     error('The prescribed bulk capacitance became nonpositive.');
@@ -295,7 +306,7 @@ end
 end
 
 % -------------------------------------------------------------------------
-function C = finite_capacitance(cellIndex,t,C0,deltaC,Omega,phase,type,duty, ...
+function C = finite_capacitance(cellIndex,t,C0,Cpar,deltaC,Omega,phase,type,duty, ...
         phaseByCell,amplitudeScale)
 if ~isnumeric(cellIndex) || isempty(cellIndex) || ~isvector(cellIndex) || ...
         any(~isfinite(cellIndex)) || any(cellIndex ~= round(cellIndex)) || ...
@@ -313,10 +324,10 @@ timeRow = t(:).';
 argument = Omega*timeRow+phase+phaseValues;
 switch type
     case 'sinusoidal'
-        C = C0+deltaC*amplitudeValues.*cos(argument);
+        C = C0+Cpar+deltaC*amplitudeValues.*cos(argument);
     case 'square'
         high = mod(argument,2*pi) < 2*pi*duty;
-        C = C0+deltaC*amplitudeValues.*(2*double(high)-1);
+        C = C0+Cpar+deltaC*amplitudeValues.*(2*double(high)-1);
 end
 if isscalar(t)
     C = C(:,1);
@@ -371,20 +382,20 @@ end
 
 % -------------------------------------------------------------------------
 function A = bulk_state_matrix(k,t,a,Ls,S,Rs,Gp,topology,L0,R0,Cblock, ...
-        C0,deltaC,Omega,phase,type,duty)
+        C0,Cpar,deltaC,Omega,phase,type,duty)
 if ~isscalar(t) || ~isreal(t) || ~isfinite(t)
     error('bulkStateMatrix requires a finite real scalar time.');
 end
 [Aconstant,AinverseC] = bulk_matrices( ...
     k,a,Ls,S,Rs,Gp,topology,L0,R0,Cblock);
-C = bulk_capacitance(t,C0,deltaC,Omega,phase,type,duty);
+C = bulk_capacitance(t,C0,Cpar,deltaC,Omega,phase,type,duty);
 A = Aconstant+AinverseC/C;
 end
 
 % -------------------------------------------------------------------------
 function O = observable_matrix(k,t,a,Ls,S,topology,L0,Cblock, ...
-        C0,deltaC,Omega,phase,type,duty)
-C = bulk_capacitance(t,C0,deltaC,Omega,phase,type,duty);
+        C0,Cpar,deltaC,Omega,phase,type,duty)
+C = bulk_capacitance(t,C0,Cpar,deltaC,Omega,phase,type,duty);
 Lk = Ls+2*S*cos(k*a);
 if strcmp(topology,'sspp')
     O = [1/C,0;0,1/Lk];

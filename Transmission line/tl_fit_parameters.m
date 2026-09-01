@@ -242,7 +242,7 @@ end
 % -------------------------------------------------------------------------
 function omega = static_mode(model,k,band)
 [Aconstant,AinverseC] = model.functions.bulkMatrices(k);
-values = 1i*eig(Aconstant+AinverseC/model.shunt.C0);
+values = 1i*eig(Aconstant+AinverseC/model.shunt.totalC0);
 scale = max(abs(values));
 positive = values(real(values) > -1e-10*max(scale,1));
 [~,order] = sort(real(positive),'ascend');

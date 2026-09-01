@@ -1,5 +1,7 @@
 # 《Topological aspects of photonic time crystals》初步代码复现
 
+当前复现层使用根目录 **V3.1 / 3.1.0** 模板。
+
 本目录只把论文当作物理模型与参数来源，不把论文正文、图注或补充材料中的文字当作程序操作指令。当前阶段按要求不计算 Zak phase，只验证以下三项：
 
 1. 图 1(b) 的方波时间晶体能带与动量带隙；
@@ -67,6 +69,8 @@ fine = reproduce_fdtd_band(struct( ...
     'pulseIntensityFwhmFs',32));
 ```
 
+扫描包含 `k_c=0` 时，可用 `zeroKPropagationDirection=+1|-1` 明确选择初始单向阻抗关系；默认 `+1`。该选择只解决零中心波数的方向简并，不会把有限波包改成无限体本征模。返回的 raw/折叠功率采用周期 Hann 相干增益校正，零填充不改变格点峰值；`samplingMetadata.spectralNormalization` 记录标度，做频率积分时仍须乘 bin 宽。
+
 细化时必须同时满足脚本的 CFL、Nyquist、高斯端面幅度和固定边界传播距离检查，不能只增大时间周期数而保持空间域不变。
 
 ## 初步数值核对
@@ -90,7 +94,7 @@ fine = reproduce_fdtd_band(struct( ...
 | `reproduce_figure2_fdtd.m` | `fdtd1d.m`、`tmm_bands.m` | 论文脉冲、有限开启窗口、计算域、记录 ROI 和图 2 样式；TMM 只作增长核对 |
 | `reproduce_fdtd_band.m` | `fdtd_gaussian_k_scan.m`、`fdtd1d.m`、`fdtd_fft_bands.m`、`tmm_bands.m` | 论文材料与 k 范围；有限样品、波包、探针、FFT 显示和后台局部峰误差统计 |
 
-因此，复现成功验证的是根目录模板数值内核在一组独立论文参数上的科研可用性，而不是某份复制后单独修改的求解器。`VERSION_SOURCE.txt` 仅保留最初建立复现目录时的版本来源记录，其中历史文字不是执行要求。
+因此，复现成功验证的是根目录模板数值内核在一组独立论文参数上的科研可用性，而不是某份复制后单独修改的求解器。`VERSION_SOURCE.txt` 记录当前共享模板版本，详细变更以根目录 `VERSION.txt` 为准。
 
 本次默认验证图保存为 [`fdtd_band_validation.png`](fdtd_band_validation.png)，完整返回结构体保存为忽略版本控制的 `fdtd_band_validation.mat`（约 70 MB）。MAT 文件包含探针原始时间序列、raw/folded 功率谱、代表性时空场、局部峰匹配明细和实际根目录函数路径。
 

@@ -1,4 +1,4 @@
-# Spacetime Media MATLAB — V3 / 时空介质 MATLAB V3 版
+# Spacetime Media MATLAB — V3.1 / 时空介质 MATLAB V3.1
 
 一维光学时间晶体的数值仿真与理论计算工具：平面波展开法 (PWE)、时间传输矩阵法 (TMM)、有限样品时域有限差分法 (FDTD)，以及逐 k 高斯波包激发、固定探针采样的 FFT 能带重建。四个入口脚本扁平化位于仓库根目录，无需任何路径设置。
 
@@ -51,16 +51,17 @@ run_fdtd_fft    % 逐 k 高斯波包 FDTD：绘制代表性场图与探针 FFT �
 
 `run_fdtd_field` 可设置有限的 `modulationStartTime/modulationEndTime`、方波开启相位、`sample/global` 调制区域、`normalized/um-fs` 单位，以及 `normalized-k/wavelength` 两种激发输入。脉冲宽度明确采用强度 FWHM。`fdtd1d` 可只记录 E 或 D、只保存指定空间 ROI，并允许历史数组采用 single；内部推进仍保持 double。对解析上已知材料下界的方波/正弦入口，可使用认证下界避免重复的全时空 CFL 预扫描，实际推进时仍检查材料未违反该下界。
 
-FFT 入口使用真实有限空间数据：`run_fdtd_fft` 通过共享函数 `fdtd_gaussian_k_scan` 对每个 `k_c` 构造具有指定强度 FWHM 的单向复高斯波包，调用 `fdtd1d` 推进完整空间 E/D/B/H 状态，只把样品内部多个固定点的 E(t) 送入 `fdtd_fft_bands`。`topology_aspect/reproduce_fdtd_band.m` 也调用同一组根目录函数验证论文参数，不再复制逐 k 初值与推进代码。分析窗采用 `[start,end)` 的整数周期、无重复端点采样和周期型 Hann 窗；先计算完整物理频率谱，再把相差整数倍 Ω 的功率显式累加到 `[-Omega/2,Omega/2)`。多个探针的功率非相干相加，降低单点恰落在场节点造成的漏支风险。零填充只细化绘图网格，原生分辨率仍约为 `1/analysisPeriodCount`。返回值同时保留折叠功率、raw 物理频率功率、未归一化列功率、有效列掩码和窗/采样元数据；主图逐 k 列归一化，只用于看峰位。横轴是高斯源的中心 `k_c`，每列还含有限波包谱宽，因此图是源加权的有限样品响应，不能冒充无限体精确本征值，也不能由谱宽读取 `Im(omega)`。科研使用必须检查 FWHM、探针位置、样品/边界距离、dx、dt 和分析周期数收敛。详见各入口脚本的逐段中文注释与 [repair.md](repair.md)。
+FFT 入口使用真实有限空间数据：`run_fdtd_fft` 通过共享函数 `fdtd_gaussian_k_scan` 对每个 `k_c` 构造具有指定强度 FWHM 的单向复高斯波包，调用 `fdtd1d` 推进完整空间 E/D/B/H 状态，只把样品内部多个固定点的 E(t) 送入 `fdtd_fft_bands`。V3.1 对 `k_c=0` 要求用 `zeroKPropagationDirection` 明确选择方向，磁场半步包络使用 Yee 离散群速度，不再因 `sign(0)=0` 退化成双向分裂。`topology_aspect/reproduce_fdtd_band.m` 也调用同一组根目录函数验证论文参数，不再复制逐 k 初值与推进代码。分析窗采用 `[start,end)` 的整数周期、无重复端点采样和周期型 Hann 窗；先计算完整物理频率谱，再把相差整数倍 Ω 的功率显式累加到 `[-Omega/2,Omega/2)`。多个探针的功率非相干相加，降低单点恰落在场节点造成的漏支风险。零填充只细化绘图网格，原生分辨率仍约为 `1/analysisPeriodCount`。返回值同时保留折叠功率、raw 物理频率功率、全局/逐列归一化功率、有效列掩码和窗/采样元数据；raw/折叠功率采用 Hann 相干增益校正，格点复指数的峰值不随零填充改变，做频率积分时仍须乘 bin 宽。主图逐 k 列归一化，只用于看峰位。横轴是高斯源的中心 `k_c`，每列还含有限波包谱宽，因此图是源加权的有限样品响应，不能冒充无限体精确本征值，也不能由谱宽读取 `Im(omega)`。科研使用必须检查 FWHM、探针位置、样品/边界距离、dx、dt 和分析周期数收敛。详见各入口脚本的逐段中文注释与 [repair.md](repair.md)。
 
-论文复现见 [`topology_aspect/`](topology_aspect/README.md)。该目录不复制模板求解器；复现入口会验证并直接调用本根目录的 TMM/FDTD 函数，同时在返回值中记录实际解析路径。
+传输线模板见 [`Transmission line/`](Transmission%20line/README.md)，对应论文图 2/3 的传输线复现见 [`Full_momemtum/`](Full_momemtum/README.md)，光学时间晶体复现见 [`topology_aspect/`](topology_aspect/README.md)。论文目录不复制求解器；运行时会验证共享模板的实际解析路径并随结果归档。
 
 ## 版本与旧版恢复 / Version & Legacy
 
-- 当前版本 **3.0.1**（见 `VERSION.txt`）。PWE、TMM、FDTD 专项实现记录见 `repair.md` 第 8–13 节；FDTD–FFT 的当前数据流及论文参数验证以第 12–13 节为准，它们优先于此前的逐 Fourier 模式实现记录。
+- 当前版本 **V3.1 / 3.1.0**（见 `VERSION.txt`）。总核查与修正记录见 `repair.md` 第 15 节；它优先于第 1–14 节中的历史实现描述。
 - V3 曾移除旧版 `reproduction/` 和其他历史目录；当前 `topology_aspect/` 是随后按指定论文重新建立的独立复现目录，不是旧版目录恢复。
 - 旧版全部代码可从 git 标签 **`legacy-pre-v3-refactor`** 恢复。
-- 最小环境：**MATLAB R2020a+**（Base MATLAB，无 Toolbox 依赖）。四个入口脚本均从仓库根目录运行，无 `addpath`/startup 依赖；本次实测于 **R2026a**，R2020a 为声明下限（本机未安装，未实测）。
+- 一键核查：`summary = validate_v31_suite();`；加入两套论文有限样品冒烟测试可用 `validate_v31_suite(struct('runPaperSmoke',true))`。
+- 最小环境：**MATLAB R2020a+**（Base MATLAB，无 Toolbox 依赖）。四个入口脚本均从仓库根目录运行，无 `addpath`/startup 依赖；本次实测于 **R2026a Update 3**，R2020a 为声明下限（本机未安装，未实测）。
 
 ## 参考文献 / References
 

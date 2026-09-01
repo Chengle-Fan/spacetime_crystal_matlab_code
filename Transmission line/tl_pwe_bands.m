@@ -16,7 +16,8 @@ if ~isnumeric(kScan) || isempty(kScan) || ~isvector(kScan) || ...
     error('kScan must be a nonempty finite real vector.');
 end
 kScan = kScan(:).';
-required = {'Omega','Mtime','mList','Cinverse','stateDimension','modelKind'};
+required = {'Omega','Mtime','mList','Cinverse','stateDimension','modelKind', ...
+    'modelSnapshot'};
 missing = required(~isfield(fourier,required));
 if ~isempty(missing)
     error('fourier is missing field(s): %s.',strjoin(missing,', '));
@@ -24,6 +25,10 @@ end
 if fourier.stateDimension ~= model.bulk.stateDimension || ...
         ~strcmp(fourier.modelKind,model.kind)
     error('fourier and model describe different circuit state spaces.');
+end
+if ~isequaln(fourier.modelSnapshot,model.snapshot)
+    error(['fourier and model do not share the same physical snapshot; ' ...
+        'rerun tl_pwe_fourier after changing any model parameter.']);
 end
 
 Mtime = fourier.Mtime;

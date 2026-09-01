@@ -1,5 +1,7 @@
 # 论文图 2、图 3 的传输线模版复现
 
+当前复现层与共享传输线模板同步为 **V3.1 / 3.1.0**。
+
 本目录使用 `../Transmission line` 中的 `tl_build_model`、`tl_pwe_*`、
 `tl_tmm_bands` 和 `tl_fdtd1d`，尝试复现 arXiv:2604.17408v1 中可由一维
 传输线模型计算的面板：图 2(d–j) 和图 3(d–i)。图 2/3(a–c) 是样品照片与
@@ -52,7 +54,7 @@ results = reproduce_figures_2_3(struct( ...
   700 MHz 全动量带隙检验；
 - `figure3_fdtd_fft.png`：CROW 的有限链多探针 V(t) FFT 响应与一列代表性 V(x,t)；
 - `figure3_fields.png`：三个激励位置的 CROW 谐振支路电流强度；
-- `reproduction_results.mat`：参数、带隙范围、PWE/TMM 误差、场增长率及绘图数据。
+- `reproduction_results.mat`：参数、带隙范围、PWE/TMM 误差、有限链场包络速率及绘图数据。
 
 每个理论动态能带都用 PWE 和 TMM 作独立交叉核对；SSPP 以密集 PWE 为主，
 含有限 `Cblock` 的四状态 CROW 则以不会误选低频寄生分支的 TMM 为主。有限链部分
@@ -63,14 +65,14 @@ results = reproduce_figures_2_3(struct( ...
 `tl_fdtd_gaussian_k_scan`、`tl_fdtd1d` 和 `tl_fdtd_fft_bands`。FFT 使用
 `[start,end)` 整数周期、周期型 Hann 窗、多固定 V 探针非相干功率和完整物理频率
 到第一 Floquet 区的显式折叠；同时保存 raw/折叠功率、未归一化列功率、有效列掩码
-和窗/采样元数据。每列主峰先独立从响应谱选出，再与最近 TMM 实频率比较，验证指标
+和窗/采样元数据。功率采用 Hann 相干增益校正，使格点峰值不随零填充改变；做谱积分仍须乘频率 bin 宽。SSPP 的 `k_c=0` 声学初值用显式方向的 `k→0` 阻抗极限并核查定向功率；重复的有限链稳定性本征审计只在模型快照完全一致时复用，每个 `k_c` 的完整 Q/Φ 推进仍独立执行。每列主峰先独立从响应谱选出，再与最近 TMM 实频率比较，验证指标
 不会用理论目标反选峰。横轴严格标为高斯源中心 `k_c`，谱线宽不解释为
-`Im(omega)`。
+`Im(omega)`。场图中返回的 `fittedFiniteChainEnvelopeRateHz` 同样只是含传播、端口、拍频和泵浦的有限窗范数速率，不是 bulk `Im(omega)/(2*pi)`。
 
 ## 论文未报告的信息与限制
 
 论文没有给出完整互感、串/并联损耗、源波形/脉宽、端口阻抗、有限样品精确
-单元数及泵浦逐单元误差。本复现因此采用以下可追踪假设：`S=0`、`Rs=Gp=R0=0`、
+单元数及泵浦逐单元误差。本复现因此采用以下可追踪假设：`S=0`、`Rs=Gp=R0=0`、`Cpar=0`（论文 `C0` 按有效总电容解释）、
 50 ohm 匹配端口、短时高斯电流源、Fig. 2 使用 97 个节点、Fig. 3 使用 33 个
 节点。它们只用于验证模版能否定性产生“带隙随泵频扩展”和“CROW 宽动量
 不稳定带及强局域化”，不能当作实验 BOM 或逐像素复刻。
@@ -88,6 +90,6 @@ results = reproduce_figures_2_3(struct( ...
 
 FDTD–FFT 还包含论文没有报告的激发与测量假设。默认值可通过
 `fftKCount`、`fftAnalysisPeriodCount`、`fftCellCount`、
-`fftPulseIntensityFwhmCells`、`fftProbeOffsets`、`fftZeroPaddingFactor` 覆盖。
+`fftPulseIntensityFwhmCells`、`fftProbeOffsets`、`fftZeroPaddingFactor`、`fftZeroKPropagationDirection` 覆盖。
 科研使用必须分别检查波包 FWHM、探针位置、链长/边界距离、时间步和分析周期数
 收敛；零填充只细化绘图网格。

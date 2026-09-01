@@ -65,6 +65,7 @@ else
 end
 
 results = struct();
+results.packageVersion = '3.1.0';
 results.paper = paper_snapshot();
 results.assumptions = assumption_snapshot(options);
 results.templateFiles = templateFiles;
@@ -162,6 +163,8 @@ options.fftInitialTailTolerance = read_fraction( ...
     input,'fftInitialTailTolerance',1e-4);
 options.fftDynamicRangeDb = read_positive( ...
     input,'fftDynamicRangeDb',60);
+options.fftZeroKPropagationDirection = read_direction( ...
+    input,'fftZeroKPropagationDirection',1);
 if options.fftKCount < 3 || options.fftAnalysisPeriodCount < 2 || ...
         options.fftCellCount < 16
     error(['FFT reproduction requires fftKCount>=3, ' ...
@@ -296,7 +299,7 @@ if options.runPhaseMap
         phaseMap.gapFraction,[0.995 0.995],'w-','LineWidth',1.4);
     plot(phaseAxes,1,1,'ro','MarkerFaceColor','r','MarkerSize',6);
     colorbar(phaseAxes);
-    clim(phaseAxes,[0 1]);
+    caxis(phaseAxes,[0 1]); %#ok<CAXIS> R2020a compatibility
     xlabel(phaseAxes,'\kappa/\kappa_0');
     ylabel(phaseAxes,'Q/Q_0');
 else
@@ -429,6 +432,8 @@ scanCfg.modulationStart = 0;
 scanCfg.modulationEnd = Inf;
 scanCfg.initialTailTolerance = options.fftInitialTailTolerance;
 scanCfg.requireNoBoundaryArrival = true;
+scanCfg.zeroKPropagationDirection = ...
+    options.fftZeroKPropagationDirection;
 scanCfg.progressEvery = max(1,ceil(options.fftKCount/5));
 scan = tl_fdtd_gaussian_k_scan(model,scanCfg);
 
@@ -481,7 +486,7 @@ imagesc(targetAxes,caseData.bands.kaOverPi, ...
 axis(targetAxes,'xy');
 xlim(targetAxes,[0 1]);
 ylim(targetAxes,[-0.5 0.5]);
-clim(targetAxes,[-options.fftDynamicRangeDb 0]);
+caxis(targetAxes,[-options.fftDynamicRangeDb 0]); %#ok<CAXIS> R2020a compatibility
 colormap(targetAxes,parula(256));
 colorbar(targetAxes);
 xlabel(targetAxes,'Gaussian source centre k_c a/\pi');
@@ -769,8 +774,12 @@ gaussianFit = gaussianFit/max(gaussianFit);
 fitRows = time >= max(modulationStart+8e-9,time(end)-20e-9);
 amplitude = sqrt(sum(power,2));
 valid = fitRows(:) & amplitude > 0;
-fit = polyfit(time(valid),log(amplitude(valid)),1);
-growthHz = fit(1)/(2*pi);
+if nnz(valid) >= 2
+    fit = polyfit(time(valid),log(amplitude(valid)),1);
+    envelopeRateHz = fit(1)/(2*pi);
+else
+    envelopeRateHz = NaN;
+end
 
 reduced = struct();
 reduced.xOverA = x;
@@ -780,7 +789,12 @@ reduced.finalNormalizedPower = finalPower;
 reduced.gaussianFit = gaussianFit;
 reduced.gaussianCenterOverA = center;
 reduced.gaussianSigmaOverA = sigma;
-reduced.fittedLateTimeGrowthHz = growthHz;
+reduced.fittedFiniteChainEnvelopeRateHz = envelopeRateHz;
+% 保留旧字段名以免已有分析脚本失效，但其含义从来不是 bulk Im(omega)。
+reduced.fittedLateTimeGrowthHz = envelopeRateHz;
+reduced.envelopeRateInterpretation = ['Finite-chain, finite-window norm ' ...
+    'rate including propagation, ports, beating and pumping; not a bulk ' ...
+    'Floquet eigenfrequency imaginary part.'];
 reduced.referencePower = referencePower;
 reduced.modulationStartSeconds = modulationStart;
 reduced.observable = label;
@@ -810,8 +824,8 @@ for index = 1:numel(cases)
     xlim(lineAxes,xLimits);
     ylim(lineAxes,[0 1.05]);
     grid(lineAxes,'on');
-    title(lineAxes,sprintf('%s, growth %.2f MHz',labels{index}, ...
-        cases(index).fittedLateTimeGrowthHz/1e6));
+    title(lineAxes,sprintf('%s, envelope rate %.2f MHz',labels{index}, ...
+        cases(index).fittedFiniteChainEnvelopeRateHz/1e6));
     if index == 1
         ylabel(lineAxes,'normalized |I|^2 at 70 ns');
     end
@@ -823,7 +837,7 @@ for index = 1:numel(cases)
     axis(fieldAxes,'xy');
     xlim(fieldAxes,xLimits);
     ylim(fieldAxes,[5 70]);
-    clim(fieldAxes,colorLimits);
+    caxis(fieldAxes,colorLimits); %#ok<CAXIS> R2020a compatibility
     colormap(fieldAxes,hot(256));
     hold(fieldAxes,'on');
     yline(fieldAxes,cases(index).modulationStartSeconds/1e-9, ...
@@ -916,6 +930,8 @@ assumptions.aEqualsReportedStripSpacing = true;
 assumptions.mutualInductanceH = 0;
 assumptions.seriesResistanceOhm = 0;
 assumptions.shuntConductanceSiemens = 0;
+assumptions.additiveParasiticCapacitanceF = 0;
+assumptions.paperC0TreatedAsEffectiveTotal = true;
 assumptions.resonatorResistanceOhm = 0;
 assumptions.portImpedanceOhm = 50;
 assumptions.fig2NodeCount = 97;
@@ -926,6 +942,8 @@ assumptions.fftPulseIntensityFwhmCells = ...
     options.fftPulseIntensityFwhmCells;
 assumptions.fftProbeOffsets = options.fftProbeOffsets;
 assumptions.fftAnalysisPeriodCount = options.fftAnalysisPeriodCount;
+assumptions.fftZeroKPropagationDirection = ...
+    options.fftZeroKPropagationDirection;
 assumptions.modulationStartSeconds = 32e-9;
 assumptions.finalTimeSeconds = 70e-9;
 assumptions.note = ['The PDF does not report these quantities completely; ' ...
@@ -1002,8 +1020,20 @@ end
 if isstring(value) && isscalar(value)
     value = char(value);
 end
-if ~ischar(value) || size(value,1) ~= 1
+if ~ischar(value) || size(value,1) ~= 1 || isempty(value)
     error('options.%s must be a text scalar.',name);
+end
+end
+
+function value = read_direction(input,name,defaultValue)
+if isfield(input,name) && ~isempty(input.(name))
+    value = input.(name);
+else
+    value = defaultValue;
+end
+if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
+        ~isfinite(value) || ~ismember(value,[-1 1])
+    error('options.%s must equal -1 or +1.',name);
 end
 end
 

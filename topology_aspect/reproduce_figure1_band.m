@@ -79,6 +79,7 @@ box(bandAxes,'on');
 %% ===================== 返回最小复现数据 =====================
 
 result.kNormalized = kNormalized;
+result.packageVersion = '3.1.0';
 result.omegaT = omegaT;
 result.gapMask = gapMask;
 result.gapIntervals = gapIntervals;

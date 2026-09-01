@@ -1,6 +1,8 @@
 function result = fdtd_fft_bands(probeSignals,time,kScan,cfg)
 %FDTD_FFT_BANDS  由逐 k 有限空间 FDTD 的固定探针 E(t) 重建 Floquet 能带。
-% probeSignals 的尺寸为 Nt-by-Nprobe-by-Nk；二维 Nt-by-Nk 输入表示单探针。
+% probeSignals 的标准尺寸为 Nt-by-Nprobe-by-Nk。MATLAB 会省略末尾的
+% 单例维：nK=1 时二维 Nt-by-Nprobe 表示多探针单列；nK>1 时二维
+% Nt-by-Nk 才表示单探针多列。
 % 函数只做时间窗、FFT、探针功率合并及按 Omega 的 Floquet 折叠，不求解
 % Maxwell 方程，也不把高斯激发中心 k 误认为每个场样本的精确本征波数。
 
@@ -25,7 +27,9 @@ if any(dtVector <= 0)
     error('time 必须严格递增。');
 end
 dtRecord = mean(dtVector);
-if max(abs(dtVector-dtRecord)) > 1e-10*max(1,abs(dtRecord))
+timeRoundoff = 128*eps(max(abs(time)));
+uniformTimeTolerance = max(1e-9*dtRecord,timeRoundoff);
+if max(abs(dtVector-dtRecord)) > uniformTimeTolerance
     error('time 必须是均匀采样网格。');
 end
 
@@ -41,10 +45,19 @@ if ~isnumeric(probeSignals) || isempty(probeSignals) || ...
     error('probeSignals 必须是非空有限数值数组。');
 end
 if ismatrix(probeSignals)
-    if size(probeSignals,1) ~= numel(time) || size(probeSignals,2) ~= nK
-        error('二维 probeSignals 必须具有 Nt-by-Nk 尺寸。');
+    if size(probeSignals,1) ~= numel(time)
+        error('probeSignals 的第一维必须等于 numel(time)。');
     end
-    probeSignals = reshape(probeSignals,numel(time),1,nK);
+    % MATLAB 会省略尺寸为 1 的末维，所以 Nt-by-Nprobe-by-1
+    % 会表现为普通二维矩阵。对单 k 扫描必须把第二维解释为
+    % 探针，否则多探针单列数据会被错认成多个 k。
+    if nK == 1
+        probeSignals = reshape(probeSignals,numel(time),size(probeSignals,2),1);
+    elseif size(probeSignals,2) == nK
+        probeSignals = reshape(probeSignals,numel(time),1,nK);
+    else
+        error('二维 probeSignals 在多 k 时必须具有 Nt-by-Nk 尺寸。');
+    end
 elseif ndims(probeSignals) == 3
     if size(probeSignals,1) ~= numel(time) || size(probeSignals,3) ~= nK
         error('三维 probeSignals 必须具有 Nt-by-Nprobe-by-Nk 尺寸。');
@@ -68,16 +81,16 @@ analysisTimeRange = cfg.analysisTimeRange;
 if ~isnumeric(analysisTimeRange) || ~isvector(analysisTimeRange) || ...
         numel(analysisTimeRange) ~= 2 || ~isreal(analysisTimeRange) || ...
         any(~isfinite(analysisTimeRange)) || ...
-        analysisTimeRange(1) < time(1) || ...
+        analysisTimeRange(1) < time(1)-uniformTimeTolerance || ...
         analysisTimeRange(2) <= analysisTimeRange(1) || ...
-        analysisTimeRange(2) > time(end)+ ...
-        1e-10*max(1,abs(time(end)))
+        analysisTimeRange(2) > time(end)+uniformTimeTolerance
     error('cfg.analysisTimeRange 必须是记录范围内严格递增的两个有限时刻。');
 end
 analysisNodeFloat = (analysisTimeRange-time(1))/dtRecord;
 analysisNodes = round(analysisNodeFloat);
-if any(abs(analysisNodeFloat-analysisNodes) > ...
-        1e-10*max(1,numel(time)))
+nodeAlignmentTolerance = max(1e-8, ...
+    128*eps(max(abs(analysisNodeFloat))));
+if any(abs(analysisNodeFloat-analysisNodes) > nodeAlignmentTolerance)
     error('cfg.analysisTimeRange 的两个端点必须对齐到探针时间网格。');
 end
 analysisDuration = analysisTimeRange(2)-analysisTimeRange(1);
@@ -142,7 +155,11 @@ windowedSignals = analysisSignals.*reshape(window,[],1,1);
 
 % 物理约定 exp(i*k*x-i*omega*t) 下，ifft 的正指数核把正 omega 放在
 % 正频率坐标。多个固定探针不相干相加功率，避免空间节点造成相消。
-complexSpectrum = ifft(windowedSignals,nFft,1);
+% MATLAB 的 ifft 含 1/nFft。乘回 nFft 并除以窗函数总和，使一个
+% 落在频率格点上的复指数峰值等于其相干振幅，且不随零填充改变。
+% raw/folded power 因而是连续谱的离散采样；跨频率积分时仍应乘 bin 宽。
+complexAmplitudeScale = nFft/sum(window);
+complexSpectrum = ifft(windowedSignals,nFft,1)*complexAmplitudeScale;
 rawPowerUnshifted = abs(complexSpectrum).^2;
 rawPowerUnshifted = reshape(sum(rawPowerUnshifted,2),nFft,nK);
 
@@ -185,6 +202,7 @@ activeKMask = isfinite(rawColumnPower) & rawColumnPower > 0 & ...
 relativePower = zeros(size(foldedPower));
 relativePower(:,activeKMask) = foldedPower(:,activeKMask)./ ...
     rawColumnPower(activeKMask);
+globalNormalizedPower = foldedPower/globalMaximum;
 displayFloor = 10^(-dynamicRangeDb/10);
 if displayFloor == 0
     error('cfg.dynamicRangeDb 过大，已超出双精度 dB 显示范围。');
@@ -201,12 +219,15 @@ result.spectrumDb = spectrumDb;
 result.foldedPower = foldedPower;
 result.rawColumnPower = rawColumnPower;
 result.activeKMask = activeKMask;
+result.columnNormalizedPower = relativePower;
+result.globalNormalizedPower = globalNormalizedPower;
 result.rawOmegaNormalized = rawOmegaNormalized;
 result.rawPower = rawPower;
 result.probeCount = nProbe;
 result.recordTimeStep = dtRecord;
 result.samplesPerPeriod = samplesPerPeriod;
 result.analysisTimeRange = analysisTimeRange(:).';
+result.analysisRows = analysisRows;
 result.analysisPeriodCount = analysisPeriodCount;
 result.temporalPeriod = T;
 result.nFft = nFft;
@@ -217,11 +238,19 @@ result.windowName = 'periodic-hann';
 result.windowCoherentGain = mean(window);
 result.windowEnergyGain = mean(window.^2);
 result.windowEnbwBins = mean(window.^2)/mean(window)^2;
+result.window = struct('name','periodic-hann', ...
+    'coherentGain',mean(window), ...
+    'energyGain',mean(window.^2), ...
+    'enbwBins',mean(window.^2)/mean(window)^2);
+result.spectralNormalization = struct( ...
+    'name','window-coherent-amplitude-squared', ...
+    'complexAmplitudeScale',complexAmplitudeScale, ...
+    'powerMeaning','squared coherent amplitude sampled on the FFT grid', ...
+    'frequencyIntegralRequiresBinWidth',true);
 result.activeColumnRelativeThreshold = activeColumnRelativeThreshold;
 if returnProbeSignals
     result.probeSignals = probeSignals;
     result.time = time;
-    result.analysisRows = analysisRows;
 end
 end
 

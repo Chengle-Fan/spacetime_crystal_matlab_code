@@ -3,8 +3,10 @@ function result = tl_fdtd_fft_bands(probeSignals,time,kScan,fftCfg)
 %
 %   result = tl_fdtd_fft_bands(probeSignals,time,kScan,fftCfg)
 %
-% probeSignals is Nt-by-Nprobe-by-Nk.  A two-dimensional Nt-by-Nk input
-% denotes one probe.  The routine applies an endpoint-free integer-period
+% probeSignals is normally Nt-by-Nprobe-by-Nk.  Because MATLAB drops a
+% trailing singleton dimension, a two-dimensional array is Nt-by-Nprobe
+% when nK=1 and Nt-by-Nk (one probe) when nK>1.  The routine applies an
+% endpoint-free integer-period
 % time gate, a periodic Hann window, a full physical-frequency FFT, and an
 % explicit incoherent power sum of replicas separated by Omega into
 % [-Omega/2,Omega/2).  It never advances a Bloch mode or calls PWE/TMM.
@@ -62,7 +64,10 @@ windowed = signals.*reshape(window,[],1,1);
 % Under exp(i*k*x-i*omega*t), ifft places positive omega on positive bins.
 % Probe powers are added, not complex amplitudes, so a field node at one
 % probe cannot coherently cancel a branch visible at another probe.
-complexSpectrum = ifft(windowed,nFft,1);
+% Undo ifft's 1/nFft and correct the Hann coherent gain.  A grid-aligned
+% complex tone then has zero-padding-invariant peak amplitude.
+complexAmplitudeScale = nFft/sum(window);
+complexSpectrum = ifft(windowed,nFft,1)*complexAmplitudeScale;
 rawProbePowerUnshifted = abs(complexSpectrum).^2;
 rawPowerUnshifted = reshape(sum(rawProbePowerUnshifted,2),nFft,nK);
 
@@ -145,6 +150,11 @@ result.window = struct('name','periodic-hann', ...
     'coherentGain',mean(window), ...
     'energyGain',mean(window.^2), ...
     'enbwBins',mean(window.^2)/mean(window)^2);
+result.spectralNormalization = struct( ...
+    'name','window-coherent-amplitude-squared', ...
+    'complexAmplitudeScale',complexAmplitudeScale, ...
+    'powerMeaning','squared coherent amplitude sampled on the FFT grid', ...
+    'frequencyIntegralRequiresBinWidth',true);
 result.activeColumnRelativeThreshold = activeThreshold;
 result.fftConfig = fftCfg;
 result.interpretation = ['Finite-chain, finite-source, finite-window real-' ...
@@ -172,7 +182,8 @@ if any(steps <= 0)
     error('time must be strictly increasing.');
 end
 dt = steps(1);
-if max(abs(steps-dt)) > 1e-9*dt
+timeRoundoff = 128*eps(max(abs(time)));
+if max(abs(steps-dt)) > max(1e-9*dt,timeRoundoff)
     error('time must be uniformly sampled.');
 end
 end
@@ -190,10 +201,19 @@ if ~isnumeric(value) || isempty(value) || any(~isfinite(value(:)))
     error('probeSignals must be a finite nonempty numeric array.');
 end
 if ismatrix(value)
-    if size(value,1) ~= nTime || size(value,2) ~= nK
-        error('A two-dimensional probeSignals input must be Nt-by-Nk.');
+    if size(value,1) ~= nTime
+        error('probeSignals must have one row per time sample.');
     end
-    signals = reshape(value,nTime,1,nK);
+    % MATLAB drops a trailing singleton dimension.  For nK=1, an
+    % Nt-by-Nprobe-by-1 array therefore arrives as Nt-by-Nprobe and must not
+    % be mistaken for several k columns.
+    if nK == 1
+        signals = reshape(value,nTime,size(value,2),1);
+    elseif size(value,2) == nK
+        signals = reshape(value,nTime,1,nK);
+    else
+        error('For multiple k values, 2-D probeSignals must be Nt-by-Nk.');
+    end
 elseif ndims(value) == 3
     if size(value,1) ~= nTime || size(value,3) ~= nK
         error('A three-dimensional probeSignals input must be Nt-by-Nprobe-by-Nk.');
@@ -210,13 +230,14 @@ if ~isnumeric(value) || ~isvector(value) || numel(value) ~= 2 || ...
     error('fftCfg.analysisTimeRange must contain two increasing finite times.');
 end
 timeRange = value(:).';
-tolerance = 1e-7*dt;
+tolerance = max(1e-7*dt,128*eps(max(abs(time))));
 if timeRange(1) < time(1)-tolerance || timeRange(2) > time(end)+tolerance
     error('fftCfg.analysisTimeRange lies outside the recorded time range.');
 end
 nodeFloat = (timeRange-time(1))/dt;
 nodes = round(nodeFloat);
-if any(abs(nodeFloat-nodes) > 1e-8)
+nodeTolerance = max(1e-8,128*eps(max(abs(nodeFloat))));
+if any(abs(nodeFloat-nodes) > nodeTolerance)
     error('Both analysisTimeRange endpoints must lie on the probe time grid.');
 end
 periodCountFloat = (timeRange(2)-timeRange(1))/T;

@@ -81,7 +81,8 @@ end
 window = periodic_hann(sampleCount);
 nFft = zeroPaddingFactor*sampleCount;
 windowed = observableSamples.*reshape(window,[],1,1,1);
-complexSpectrum = ifft(windowed,nFft,1);
+complexAmplitudeScale = nFft/sum(window);
+complexSpectrum = ifft(windowed,nFft,1)*complexAmplitudeScale;
 powerByChannel = abs(complexSpectrum).^2;
 rawPower = reshape(sum(sum(powerByChannel,2),3),nFft,nK);
 
@@ -117,6 +118,11 @@ result.windowName = 'periodic-hann';
 result.windowCoherentGain = mean(window);
 result.windowEnergyGain = mean(window.^2);
 result.windowEnbwBins = sampleCount*sum(window.^2)/sum(window)^2;
+result.spectralNormalization = struct( ...
+    'name','window-coherent-amplitude-squared', ...
+    'complexAmplitudeScale',complexAmplitudeScale, ...
+    'powerMeaning','squared coherent amplitude sampled on the FFT grid', ...
+    'frequencyIntegralRequiresBinWidth',true);
 result.nativeOmegaResolution = Omega/sampleCount;
 result.zeroPaddedOmegaSpacing = Omega/nFft;
 result.temporalCellCount = temporalCellCount;

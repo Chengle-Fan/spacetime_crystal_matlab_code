@@ -11,4 +11,4 @@ options.runPhaseMap = true;
 options.runFftBands = true;
 options.saveOutputs = true;
 
-results = reproduce_figures_2_3(options); %#ok<NASGU>
+results = reproduce_figures_2_3(options);

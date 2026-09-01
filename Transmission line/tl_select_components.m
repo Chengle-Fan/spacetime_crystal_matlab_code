@@ -9,9 +9,9 @@ function report = tl_select_components(model,catalog,selectCfg)
 % value is in F for capacitors/varactors and H for inductors.  A missing
 % catalog is allowed and produces target-only rows, never fabricated parts.
 %
-% C0 is an effective shunt parameter, not automatically a purchasable
-% capacitor.  Selection results must be de-embedded with pad, via, bias,
-% package, and varactor parasitics before they become a BOM.
+% C0 is the nominal modulated shunt contribution and is not automatically
+% a purchasable capacitor.  Cpar, when nonzero, is an additive extracted
+% parasitic.  Selection results must be de-embedded before they become a BOM.
 
 if nargin ~= 3 || ~isstruct(model) || ~isscalar(model) || ...
         ~isstruct(catalog) || ~isscalar(catalog) || ...
@@ -47,10 +47,11 @@ for index = 1:numel(targets)
 end
 
 previousRandomState = rng;
+randomCleanup = onCleanup(@() rng(previousRandomState));
 rng(randomSeed,'twister');
 monteCarlo = tolerance_monte_carlo( ...
     model,selections,nSamples,selectCfg);
-rng(previousRandomState);
+clear randomCleanup;
 
 checks.capacitancePositive = ...
     model.modulation.capacitanceMinimum > 0;
@@ -99,7 +100,12 @@ targets = repmat(struct('name','','value',NaN,'unit','', ...
 targets(end+1) = make_target('Ls',model.series.Ls,'H','inductors', ...
     'effective series inductance per cell');
 targets(end+1) = make_target('C0',model.shunt.C0,'F','capacitors', ...
-    'effective total shunt capacitance; de-embedding required');
+    ['nominal modulated shunt capacitance excluding separately declared ' ...
+    'Cpar; de-embedding required']);
+if model.shunt.Cpar > 0
+    targets(end+1) = make_target('Cpar',model.shunt.Cpar,'F','none', ...
+        'extracted additive parasitic capacitance, not a catalog part');
+end
 targets(end+1) = make_target('CvarAtBias',model.paper.CvarAtBias,'F', ...
     'varactors','bias-point varactor capacitance reference');
 targets(end+1) = make_target('deltaC',model.shunt.deltaC,'F','none', ...
@@ -212,14 +218,15 @@ end
 mutualTolerance = read_nonnegative(cfg,'mutualToleranceFraction',0);
 LsSamples = Ls*(1+LsTolerance*(2*rand(count,1)-1));
 C0Samples = C0*(1+C0Tolerance*(2*rand(count,1)-1));
+CtotalSamples = C0Samples+model.shunt.Cpar;
 SSamples = model.series.mutualS* ...
     (1+mutualTolerance*(2*rand(count,1)-1));
-valid = LsSamples > 2*abs(SSamples) & C0Samples > 0;
+valid = LsSamples > 2*abs(SSamples) & C0Samples > 0 & CtotalSamples > 0;
 boundary = nan(count,1);
 impedance = nan(count,1);
 boundary(valid) = 2./sqrt((LsSamples(valid)-2*SSamples(valid)).* ...
-    C0Samples(valid))/(2*pi);
-impedance(valid) = sqrt(LsSamples(valid)./C0Samples(valid));
+    CtotalSamples(valid))/(2*pi);
+impedance(valid) = sqrt(LsSamples(valid)./CtotalSamples(valid));
 output.sampleCount = count;
 output.randomSeed = read_integer(cfg,'randomSeed',260417408,0);
 output.validFraction = mean(valid);
@@ -231,7 +238,7 @@ if strcmp(model.kind,'crow')
     validCrow = valid & L0Samples > 0;
     fcol = nan(count,1);
     fcol(validCrow) = 1./sqrt(L0Samples(validCrow).* ...
-        C0Samples(validCrow))/(2*pi);
+        CtotalSamples(validCrow))/(2*pi);
     output.fcolHz = percentiles(fcol(validCrow),[5 50 95]);
 end
 output.percentileLevels = [5 50 95];

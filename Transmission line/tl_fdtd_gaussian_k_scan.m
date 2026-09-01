@@ -5,7 +5,9 @@ function result = tl_fdtd_gaussian_k_scan(model,scanCfg)
 %
 % Each kScan entry is the centre of a finite-width complex voltage packet.
 % The packet is embedded in a complete Q/Phi finite-chain state using an
-% instantaneous bulk eigenvector, then advanced by tl_fdtd1d.  Only fixed
+% instantaneous local bulk eigenvector at the packet centre, then advanced
+% by tl_fdtd1d.  The requested V envelope is imposed exactly even when the
+% finite-chain capacitance is spatially nonuniform.  Only fixed
 % node-voltage probes are retained for every k; one representative run can
 % additionally retain a full spatial voltage/current history.
 %
@@ -23,6 +25,7 @@ function result = tl_fdtd_gaussian_k_scan(model,scanCfg)
 %   modulationStart/End       passed to tl_fdtd1d
 %   initialTailTolerance      default 1e-4
 %   requireNoBoundaryArrival  default true
+%   zeroKPropagationDirection default +1 for a zero-frequency acoustic mode
 %
 % pulseIntensityFwhmCells is the FWHM of |V|^2, not of V.  The returned
 % horizontal coordinate remains the source centre k_c; every column has a
@@ -33,7 +36,7 @@ if nargin ~= 2 || ~isstruct(model) || ~isscalar(model) || ...
     error('Use tl_fdtd_gaussian_k_scan(model,scanCfg).');
 end
 requiredModel = {'kind','cell','series','shunt','resonator','finite', ...
-    'modulation','functions','snapshot'};
+    'modulation','functions','snapshot','derived'};
 missingModel = requiredModel(~isfield(model,requiredModel));
 if ~isempty(missingModel)
     error('model is missing field(s): %s.',strjoin(missingModel,', '));
@@ -75,6 +78,11 @@ requireNoBoundaryArrival = read_logical( ...
 progressEvery = read_integer( ...
     scanCfg,'progressEvery',max(1,ceil(nK/10)),1);
 returnProbeSignals = read_logical(scanCfg,'returnProbeSignals',true);
+zeroKPropagationDirection = read_real( ...
+    scanCfg,'zeroKPropagationDirection',1);
+if ~ismember(zeroKPropagationDirection,[-1 1])
+    error('scanCfg.zeroKPropagationDirection must equal -1 or +1.');
+end
 
 if isfield(scanCfg,'targetInitialFrequencyHz') && ...
         ~isempty(scanCfg.targetInitialFrequencyHz)
@@ -98,7 +106,7 @@ amplitudeWidth = fwhm/sqrt(2*log(2));
 distanceToBoundary = min(xCenter-xNode(1),xNode(end)-xCenter);
 tailRadius = amplitudeWidth*sqrt(log(1/initialTailTolerance));
 minimumSeriesInductance = model.series.Ls-2*abs(model.series.mutualS);
-minimumCapacitance = model.shunt.C0-model.shunt.deltaC* ...
+minimumCapacitance = model.shunt.totalC0-model.shunt.deltaC* ...
     max(model.finite.amplitudeScaleByCell);
 velocityScale = a/sqrt(minimumSeriesInductance*minimumCapacitance);
 travelDistanceScale = velocityScale*nSteps*dt;
@@ -120,8 +128,8 @@ if strcmp(boundaryType,'short') && any(probeNodeIndices == [1 nNode])
 end
 nBranch = nNode-1;
 xBranchStart = (0:nBranch-1)*a;
+xBranchMidpoint = xBranchStart+a/2;
 nodeEnvelope = exp(-((xNode-xCenter)/amplitudeWidth).^2);
-branchEnvelope = exp(-((xBranchStart-xCenter)/amplitudeWidth).^2);
 
 nRecord = nSteps/recordEvery+1;
 if returnProbeSignals
@@ -135,32 +143,103 @@ representativeField = struct();
 initialOmega = zeros(1,nK);
 initialModeIndex = zeros(1,nK);
 initialVoltageWeight = zeros(1,nK);
+initialModeReferenceK = zeros(1,nK);
+carrierGroupVelocity = zeros(1,nK);
+carrierOmegaLeapfrog = complex(zeros(1,nK));
+initialDirectionalPower = zeros(1,nK);
+initialVoltageEnvelopeRelativeError = zeros(1,nK);
+stabilityAudit = [];
 if modulationEnabled && modulationStart == 0
     initialBulkCapacitance = model.functions.capacitanceBulk(0);
-    initialCenterCapacitance = ...
-        model.functions.capacitanceFinite(centerNode,0);
+    initialFiniteCapacitance = model.functions.capacitanceFinite( ...
+        (1:nNode).',0);
 else
-    initialBulkCapacitance = model.shunt.C0;
-    initialCenterCapacitance = model.shunt.C0;
+    initialBulkCapacitance = model.shunt.totalC0;
+    initialFiniteCapacitance = ...
+        model.shunt.totalC0*ones(nNode,1);
+end
+initialCenterCapacitance = initialFiniteCapacitance(centerNode);
+initialModeCapacitance = initialCenterCapacitance;
+capacitanceUniformTolerance = ...
+    128*eps(max(abs(initialFiniteCapacitance)));
+initialFiniteCapacitanceUniform = ...
+    max(abs(initialFiniteCapacitance-initialCenterCapacitance)) <= ...
+    capacitanceUniformTolerance;
+if ~initialFiniteCapacitanceUniform
+    warning('tl_fdtd_gaussian_k_scan:NonuniformInitialCapacitance', ...
+        ['The initial finite-chain capacitance is spatially nonuniform. ' ...
+        'The voltage Gaussian is imposed exactly, while the companion flux/' ...
+        'resonator state is a local centre-cell narrow-band approximation.']);
+end
+lossyModeTrackingApproximation = model.series.Rs > 0 || ...
+    model.shunt.Gp > 0 || ...
+    (strcmp(model.kind,'crow') && model.resonator.R0 > 0);
+if lossyModeTrackingApproximation
+    warning('tl_fdtd_gaussian_k_scan:LossyModalTrackingApproximation', ...
+        ['Neighbouring-k tracking uses a right-eigenvector energy-overlap ' ...
+        'heuristic for this lossy model.  Near an exceptional point, use ' ...
+        'nonzero-k port excitation or a biorthogonal modal analysis.']);
 end
 
 for kIndex = 1:nK
     kCenter = kScan(kIndex);
     [modeState,omegaMode,modeIndex,voltageWeight] = ...
         select_initial_mode(model,kCenter,targetOmega, ...
-        initialBulkCapacitance,initialCenterCapacitance);
+        initialModeCapacitance);
+    modeReferenceK = kCenter;
+    zeroKTolerance = 64*eps(pi/a);
+    useSignedZeroLimit = abs(kCenter) <= zeroKTolerance && ...
+        strcmp(model.kind,'sspp');
+    if useSignedZeroLimit
+        % SSPP 的声学支在 k=0 简并；含损耗时还可能成为纯衰减模。
+        % 无条件使用用户指定一侧的 k->0 极限补全阻抗关系，避免
+        % eig 的零点排序决定方向。载波空间中心仍严格保持 k_c=0。
+        modeReferenceK = zeroKPropagationDirection*1e-6*pi/a;
+        [modeState,omegaMode,modeIndex,voltageWeight] = ...
+            select_initial_mode(model,modeReferenceK,targetOmega, ...
+            initialModeCapacitance);
+    end
+    omegaLeapfrog = discrete_carrier_omega(omegaMode,dt);
+    groupVelocity = estimate_group_velocity(model,kCenter,modeReferenceK, ...
+        modeState,omegaMode,initialModeCapacitance, ...
+        zeroKPropagationDirection,useSignedZeroLimit,dt);
     initialOmega(kIndex) = omegaMode;
     initialModeIndex(kIndex) = modeIndex;
     initialVoltageWeight(kIndex) = voltageWeight;
+    initialModeReferenceK(kIndex) = modeReferenceK;
+    carrierGroupVelocity(kIndex) = groupVelocity;
+    carrierOmegaLeapfrog(kIndex) = omegaLeapfrog;
 
     modeState = modeState*(voltageAmplitude/voltageWeight);
+    [directionalPower,powerScale] = modal_series_power( ...
+        model,modeReferenceK,modeState,initialModeCapacitance);
+    initialDirectionalPower(kIndex) = directionalPower;
+    if useSignedZeroLimit
+        frequencyResolution = ...
+            1e-9*model.derived.omegaMaximumEstimate;
+        powerResolution = 1e-9*max(powerScale,realmin);
+        if abs(real(omegaMode)) <= frequencyResolution || ...
+                zeroKPropagationDirection*directionalPower <= powerResolution
+            error(['The requested SSPP k_c=0 signed limit has no resolvable ' ...
+                'propagating frequency/power direction.  Use a nonzero k_c ' ...
+                'or a physical port excitation for this lossy/overdamped model.']);
+        end
+    end
     nodeCarrier = exp(1i*kCenter*(xNode-xCenter));
     branchCarrier = exp(1i*kCenter*(xBranchStart-xCenter));
-    halfStepFactor = exp(1i*omegaMode*dt/2);
+    halfStepFactor = exp(1i*omegaLeapfrog*dt/2);
+    centerAtMinusHalfStep = xCenter-groupVelocity*dt/2;
+    branchEnvelopeHalf = exp(-((xBranchMidpoint- ...
+        centerAtMinusHalfStep)/amplitudeWidth).^2);
+    nodeEnvelopeHalf = exp(-((xNode-centerAtMinusHalfStep)/ ...
+        amplitudeWidth).^2);
 
-    q0 = modeState(1)*nodeEnvelope.*nodeCarrier;
+    targetVoltage0 = voltageAmplitude*nodeEnvelope.*nodeCarrier;
+    q0 = initialFiniteCapacitance.'.*targetVoltage0;
+    initialVoltageEnvelopeRelativeError(kIndex) = max(abs( ...
+        q0./initialFiniteCapacitance.'-targetVoltage0))/voltageAmplitude;
     phiHalf0 = modeState(2)*halfStepFactor* ...
-        branchEnvelope.*branchCarrier;
+        branchEnvelopeHalf.*branchCarrier;
 
     fdtdCfg = struct();
     fdtdCfg.dt = dt;
@@ -176,11 +255,13 @@ for kIndex = 1:nK
     fdtdCfg.source = struct('type','none');
     if strcmp(model.kind,'crow')
         fdtdCfg.I0Half0 = modeState(3)*halfStepFactor/model.resonator.L0* ...
-            (nodeEnvelope.*nodeCarrier).';
+            (nodeEnvelopeHalf.*nodeCarrier).';
         if ~isinf(model.resonator.Cblock)
-            fdtdCfg.Qblock0 = modeState(4)* ...
-                (nodeEnvelope.*nodeCarrier).';
+            fdtdCfg.Qblock0 = (modeState(4)/modeState(1))*q0(:);
         end
+    end
+    if ~isempty(stabilityAudit)
+        fdtdCfg.stabilityAudit = stabilityAudit;
     end
 
     if kIndex == representativeKIndex
@@ -191,6 +272,9 @@ for kIndex = 1:nK
         fdtdCfg.branchIndices = nearest_branches(probeNodeIndices,nBranch);
     end
     field = tl_fdtd1d(model,fdtdCfg);
+    if isempty(stabilityAudit)
+        stabilityAudit = field.grid.stabilityAudit;
+    end
     if isempty(time)
         time = field.node.t(:);
     elseif ~isequal(time,field.node.t(:))
@@ -226,8 +310,20 @@ result.representativeKIndex = representativeKIndex;
 result.initialOmega = initialOmega;
 result.initialModeIndex = initialModeIndex;
 result.initialVoltageWeightBeforeScaling = initialVoltageWeight;
+result.initialModeReferenceK = initialModeReferenceK;
+result.carrierGroupVelocity = carrierGroupVelocity;
+result.carrierOmegaLeapfrog = carrierOmegaLeapfrog;
+result.initialDirectionalPower = initialDirectionalPower;
+result.zeroKPropagationDirection = zeroKPropagationDirection;
 result.initialBulkCapacitance = initialBulkCapacitance;
 result.initialCenterCapacitance = initialCenterCapacitance;
+result.initialModeCapacitance = initialModeCapacitance;
+result.initialFiniteCapacitance = initialFiniteCapacitance;
+result.initialFiniteCapacitanceUniform = initialFiniteCapacitanceUniform;
+result.lossyModeTrackingApproximation = ...
+    lossyModeTrackingApproximation;
+result.initialVoltageEnvelopeRelativeError = ...
+    initialVoltageEnvelopeRelativeError;
 result.pulseIntensityFwhm = fwhm;
 result.pulseIntensityFwhmCells = fwhmCells;
 result.approximateIntensityKFwhm = 4*log(2)/fwhm;
@@ -240,21 +336,78 @@ result.travelDistanceScale = travelDistanceScale;
 result.requireNoBoundaryArrival = requireNoBoundaryArrival;
 result.recordEvery = recordEvery;
 result.recordTimeStep = recordEvery*dt;
+result.stabilityAudit = stabilityAudit;
 result.observableName = 'node voltage V (electric-field circuit proxy)';
 result.modelSnapshot = model.snapshot;
 result.scanConfig = scanCfg;
 result.interpretation = ['Each column is a finite-chain response weighted ' ...
-    'by a finite-width Gaussian source centred at k_c.'];
+    'by a finite-width Gaussian voltage source centred at k_c.  For a ' ...
+    'spatially nonuniform initial capacitance, its companion state uses a ' ...
+    'local centre-cell narrow-band mode approximation.'];
+end
+
+% -------------------------------------------------------------------------
+function [power,powerScale] = modal_series_power(model,k,state,capacitance)
+physicalState = midpoint_gauge(state,k,model.cell.a);
+seriesInductance = model.series.Ls+ ...
+    2*model.series.mutualS*cos(k*model.cell.a);
+voltage = physicalState(1)/capacitance;
+current = physicalState(2)/seriesInductance;
+power = 0.5*real(voltage*conj(current));
+powerScale = 0.5*abs(voltage)*abs(current);
+if ~isfinite(power) || ~isfinite(powerScale)
+    error('Selected initial mode has non-finite series power.');
+end
+end
+
+% -------------------------------------------------------------------------
+function velocity = estimate_group_velocity( ...
+        model,k,referenceK,referenceState,referenceOmega,modeCapacitance, ...
+        zeroDirection,useSignedZeroLimit,dt)
+a = model.cell.a;
+kLimit = pi/a;
+step = 1e-4*kLimit;
+if useSignedZeroLimit
+    kLeft = zeroDirection*0.5*step;
+    kRight = zeroDirection*1.5*step;
+else
+    kLeft = max(-kLimit,k-step);
+    kRight = min(kLimit,k+step);
+end
+if kRight == kLeft
+    velocity = 0;
+    return;
+end
+[~,omegaLeft] = select_tracked_mode(model,kLeft,modeCapacitance, ...
+    referenceState,referenceOmega,referenceK);
+[~,omegaRight] = select_tracked_mode(model,kRight,modeCapacitance, ...
+    referenceState,referenceOmega,referenceK);
+omegaLeft = discrete_carrier_omega(omegaLeft,dt);
+omegaRight = discrete_carrier_omega(omegaRight,dt);
+velocity = (real(omegaRight)-real(omegaLeft))/(kRight-kLeft);
+if ~isfinite(velocity)
+    error('Unable to estimate a finite carrier group velocity.');
+end
+end
+
+% -------------------------------------------------------------------------
+function omegaDiscrete = discrete_carrier_omega(omegaContinuous,dt)
+% 对无损交错 leapfrog 振子，sin(omega_d*dt/2)=omega*dt/2。
+% 有损扫描仍把它作为窄带初值近似；实际演化始终由完整有限链内核决定。
+omegaDiscrete = (2/dt)*asin(omegaContinuous*dt/2);
+if ~isfinite(omegaDiscrete)
+    error('Unable to construct a finite leapfrog carrier frequency.');
+end
 end
 
 % -------------------------------------------------------------------------
 function [state,omegaSelected,index,voltageWeight] = ...
-        select_initial_mode(model,k,targetOmega,bulkCapacitance,centerCapacitance)
+        select_initial_mode(model,k,targetOmega,modeCapacitance)
 [Aconstant,AinverseC] = model.functions.bulkMatrices(k);
-A = Aconstant+AinverseC/bulkCapacitance;
+A = Aconstant+AinverseC/modeCapacitance;
 [vectors,values] = eig(A,'vector');
 omega = 1i*values;
-voltage = vectors(1,:)/centerCapacitance;
+voltage = vectors(1,:)/modeCapacitance;
 tolerance = 1e-10*max([1;abs(omega)]);
 positive = find(real(omega) >= -tolerance & ...
     abs(voltage(:)) > 1e-12*max(abs(voltage)));
@@ -275,6 +428,73 @@ omegaSelected = omega(index);
 voltageWeight = voltage(index);
 if ~isfinite(voltageWeight) || abs(voltageWeight) <= realmin
     error('Selected initial mode has zero or non-finite voltage weight.');
+end
+end
+
+% -------------------------------------------------------------------------
+function [state,omegaSelected,index] = select_tracked_mode( ...
+        model,k,modeCapacitance,referenceState,referenceOmega,referenceK)
+[Aconstant,AinverseC] = model.functions.bulkMatrices(k);
+A = Aconstant+AinverseC/modeCapacitance;
+[vectors,values] = eig(A,'vector');
+omega = 1i*values;
+voltage = vectors(1,:)/modeCapacitance;
+tolerance = 1e-10*max([1;abs(omega);abs(referenceOmega)]);
+candidates = find(real(omega) >= -tolerance & ...
+    abs(voltage(:)) > 1e-12*max(abs(voltage)));
+if isempty(candidates)
+    error('No trackable voltage-observable mode at k=%.16g.',k);
+end
+
+% 用正定电路能量度量比较相邻 k 的右本征向量，避免不同量纲的 Q/Phi
+% 分量直接做欧氏内积，也避免 CROW 近交叉处按 targetOmega 重新跳支。
+% 体模型的 Phi gauge 锚在支路起点；比较前转到物理支路中点。
+weights = state_energy_weights( ...
+    model,referenceK,modeCapacitance,numel(referenceState));
+referencePhysical = midpoint_gauge(referenceState,referenceK,model.cell.a);
+referenceNorm = sqrt(real( ...
+    referencePhysical'*(weights.*referencePhysical)));
+overlap = zeros(size(candidates));
+for candidateIndex = 1:numel(candidates)
+    vector = midpoint_gauge( ...
+        vectors(:,candidates(candidateIndex)),k,model.cell.a);
+    vectorNorm = sqrt(real(vector'*(weights.*vector)));
+    overlap(candidateIndex) = abs( ...
+        referencePhysical'*(weights.*vector))/ ...
+        max(referenceNorm*vectorNorm,realmin);
+end
+bestOverlap = max(overlap);
+nearBest = find(overlap >= bestOverlap-128*eps(max(1,bestOverlap)));
+if numel(nearBest) > 1
+    [~,nearIndex] = min(abs(omega(candidates(nearBest))-referenceOmega));
+    local = nearBest(nearIndex);
+else
+    local = nearBest;
+end
+index = candidates(local);
+state = vectors(:,index);
+omegaSelected = omega(index);
+end
+
+% -------------------------------------------------------------------------
+function state = midpoint_gauge(state,k,a)
+state(2) = state(2)*exp(-1i*k*a/2);
+end
+
+% -------------------------------------------------------------------------
+function weights = state_energy_weights(model,k,capacitance,stateCount)
+seriesInductance = model.series.Ls+ ...
+    2*model.series.mutualS*cos(k*model.cell.a);
+weights = [1/capacitance;1/seriesInductance];
+if strcmp(model.kind,'crow')
+    weights(end+1,1) = 1/model.resonator.L0;
+    if stateCount == 4
+        weights(end+1,1) = 1/model.resonator.Cblock;
+    end
+end
+if numel(weights) ~= stateCount || any(~isfinite(weights)) || ...
+        any(weights <= 0)
+    error('Unable to construct a positive finite modal-energy metric.');
 end
 end
 

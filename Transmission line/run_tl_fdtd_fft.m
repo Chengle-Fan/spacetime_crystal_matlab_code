@@ -49,6 +49,7 @@ scanCfg.modulationStart = 0;
 scanCfg.modulationEnd = Inf;
 scanCfg.initialTailTolerance = 1e-4;
 scanCfg.requireNoBoundaryArrival = true;
+scanCfg.zeroKPropagationDirection = 1;
 scanCfg.progressEvery = 10;
 scanResult = tl_fdtd_gaussian_k_scan(model,scanCfg);
 
@@ -84,7 +85,7 @@ axis xy;
 ylim([-0.5 0.5]);
 colormap(parula(256));
 colorbar;
-clim([-fftCfg.dynamicRangeDb 0]);
+caxis([-fftCfg.dynamicRangeDb 0]); %#ok<CAXIS> R2020a compatibility
 xlabel('Gaussian source centre k_c a/\pi');
 ylabel('Re(\omega)/\Omega');
 title('Finite-chain multi-probe V(t) FFT (per-k display normalization)');
