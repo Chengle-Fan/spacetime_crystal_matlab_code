@@ -20,26 +20,19 @@ if any(abs(kScan) > pi/model.cell.a*(1+100*eps))
     error('Bulk FFT kScan must lie in the spatial first Brillouin zone.');
 end
 
-stepsPerPeriod = read_integer(blochCfg,'stepsPerPeriod',256,4);
-temporalCellCount = read_integer(blochCfg,'temporalCellCount',64,4);
-zeroPaddingFactor = read_integer(blochCfg,'zeroPaddingFactor',4,1);
-dynamicRangeDb = read_positive(blochCfg,'dynamicRangeDb',60);
-returnTemporalSamples = read_logical( ...
+stepsPerPeriod = tl_option('integer',blochCfg,'stepsPerPeriod',256,4);
+temporalCellCount = tl_option('integer',blochCfg,'temporalCellCount',64,4);
+zeroPaddingFactor = tl_option('integer',blochCfg,'zeroPaddingFactor',4,1);
+dynamicRangeDb = tl_option('positive',blochCfg,'dynamicRangeDb',60);
+returnTemporalSamples = tl_option('logical', ...
     blochCfg,'returnTemporalSamples',false);
 T = model.modulation.period;
 Omega = model.modulation.OmegaRadPerSec;
 nState = model.bulk.stateDimension;
 nK = numel(kScan);
 
-if strcmp(model.modulation.type,'square')
-    [segmentMidpoints,segmentDurations] = square_segments(model);
-    integrationName = 'exact-square-layers';
-else
-    dt = T/stepsPerPeriod;
-    segmentMidpoints = ((1:stepsPerPeriod)-0.5)*dt;
-    segmentDurations = dt*ones(1,stepsPerPeriod);
-    integrationName = 'midpoint-expm';
-end
+[segmentMidpoints,segmentDurations,integrationName] = ...
+    tl_time_layers(model,stepsPerPeriod);
 
 sampleCount = temporalCellCount;
 observableSamples = complex(zeros(sampleCount,nState,nState,nK));
@@ -155,51 +148,7 @@ basis = diag(scales);
 end
 
 % -------------------------------------------------------------------------
-function [midpoints,durations] = square_segments(model)
-T = model.modulation.period;
-Omega = model.modulation.OmegaRadPerSec;
-phase = model.modulation.phase;
-duty = model.modulation.dutyCycle;
-times = [0,T];
-for boundary = [0,2*pi*duty]
-    for order = -3:3
-        value = (boundary-phase+2*pi*order)/Omega;
-        if value > 64*eps(T) && value < T-64*eps(T)
-            times(end+1) = value; %#ok<AGROW>
-        end
-    end
-end
-times = unique(sort(times));
-durations = diff(times);
-midpoints = times(1:end-1)+durations/2;
-end
-
-% -------------------------------------------------------------------------
 function window = periodic_hann(count)
 index = (0:count-1).';
 window = 0.5-0.5*cos(2*pi*index/count);
-end
-
-% -------------------------------------------------------------------------
-function value = read_integer(cfg,name,defaultValue,minimum)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
-        ~isfinite(value) || value ~= round(value) || value < minimum
-    error('blochCfg.%s must be an integer not smaller than %d.',name,minimum);
-end
-end
-
-function value = read_positive(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
-        ~isfinite(value) || value <= 0
-    error('blochCfg.%s must be a positive finite real scalar.',name);
-end
-end
-
-function value = read_logical(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if ~islogical(value) || ~isscalar(value)
-    error('blochCfg.%s must be a logical scalar.',name);
-end
 end

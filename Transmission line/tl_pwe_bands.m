@@ -65,7 +65,7 @@ for ik = 1:nK
     [rightVectors,eigenvalueMatrix,leftVectors] = eig(H);
     raw = diag(eigenvalueMatrix);
     [rightVectors,leftVectors,conditionNumber] = ...
-        normalize_eigenvectors(rightVectors,leftVectors);
+        tl_normalize_eigenvectors(rightVectors,leftVectors);
     foldedRaw = fold_frequency(raw,Omega);
 
     rightNorm = sum(abs(rightVectors).^2,1).';
@@ -75,7 +75,7 @@ for ik = 1:nK
     observable = observable./max(max(observable),realmin);
     score = central.*(0.25+0.75*observable);
     [~,ranked] = sort(score,'descend');
-    chosen = ranked(1:nState);
+    chosen = select_representatives(ranked,raw,rightVectors,nState,Omega);
 
     candidateRight = rightVectors(:,chosen);
     candidateFolded = foldedRaw(chosen);
@@ -83,7 +83,7 @@ for ik = 1:nK
         [~,order] = sortrows([real(candidateFolded),imag(candidateFolded)],[1 2]);
     else
         overlap = abs(previousLeft'*candidateRight);
-        order = best_permutation(overlap);
+        order = tl_match_modes(overlap);
     end
     chosen = chosen(order);
     candidateRight = rightVectors(:,chosen);
@@ -129,48 +129,37 @@ result.pweConfig = pweCfg;
 end
 
 % -------------------------------------------------------------------------
-function [V,W,conditionNumber] = normalize_eigenvectors(V,W)
-nMode = size(V,2);
-conditionNumber = zeros(nMode,1);
-for mode = 1:nMode
-    nv = norm(V(:,mode));
-    nw = norm(W(:,mode));
-    if nv == 0 || nw == 0 || ~isfinite(nv) || ~isfinite(nw)
-        error('PWE returned an invalid left or right eigenvector.');
-    end
-    V(:,mode) = V(:,mode)/nv;
-    W(:,mode) = W(:,mode)/nw;
-    product = W(:,mode)'*V(:,mode);
-    conditionNumber(mode) = 1/max(abs(product),realmin);
-end
-end
-
-% -------------------------------------------------------------------------
-function order = best_permutation(overlap)
-n = size(overlap,1);
-if size(overlap,2) ~= n
-    error('Mode-overlap matrix must be square.');
-end
-if n > 8
-    [~,order] = max(overlap,[],2);
-    if numel(unique(order)) ~= n
-        [~,order] = sort(max(overlap,[],1),'descend');
-    end
-    order = order(:).';
-    return;
-end
-candidate = perms(1:n);
-scores = zeros(size(candidate,1),1);
-rows = (1:n).';
-for index = 1:size(candidate,1)
-    cols = candidate(index,:).';
-    scores(index) = sum(overlap(sub2ind([n n],rows,cols)));
-end
-[~,best] = max(scores);
-order = candidate(best,:);
-end
-
-% -------------------------------------------------------------------------
 function folded = fold_frequency(omega,Omega)
 folded = mod(real(omega)+Omega/2,Omega)-Omega/2+1i*imag(omega);
+end
+
+function chosen = select_representatives(ranked,omega,vectors,nState,Omega)
+% Replicas have frequencies separated by j*Omega and the same eigenvector
+% after shifting its harmonic index by j. Keep independent degenerate modes,
+% but do not let two replicas of a strong resonance displace a weak branch.
+nHarmonic = size(vectors,1)/nState;
+chosen = zeros(0,1);
+for index = ranked(:).'
+    duplicate = false;
+    candidate = reshape(vectors(:,index),nState,nHarmonic);
+    for previous = chosen(:).'
+        shift = round(real(omega(index)-omega(previous))/Omega);
+        if shift == 0 || abs(shift) >= nHarmonic || ...
+                abs(omega(index)-omega(previous)-shift*Omega) > 1e-5*Omega
+            continue;
+        end
+        rows = max(1,1-shift):min(nHarmonic,nHarmonic-shift);
+        reference = reshape(vectors(:,previous),nState,nHarmonic);
+        a = candidate(:,rows);
+        b = reference(:,rows+shift);
+        overlap = abs(a(:)'*b(:))/max(norm(a(:))*norm(b(:)),realmin);
+        if overlap > 1-1e-5
+            duplicate = true;
+            break;
+        end
+    end
+    if ~duplicate, chosen(end+1,1) = index; end %#ok<AGROW>
+    if numel(chosen) == nState, return; end
+end
+error('Unable to select independent Floquet representatives; increase Mtime/Nt.');
 end

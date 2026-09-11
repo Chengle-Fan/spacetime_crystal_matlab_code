@@ -19,16 +19,12 @@ nK = numel(kScan);
 T = model.modulation.period;
 Omega = model.modulation.OmegaRadPerSec;
 
-if strcmp(model.modulation.type,'square')
-    [segmentMidpoints,segmentDurations] = square_segments(model);
-    integrationName = 'exact-square-layers';
-else
-    temporalSlices = read_integer(tmmCfg,'temporalSlices',512,4);
-    dt = T/temporalSlices;
-    segmentMidpoints = ((1:temporalSlices)-0.5)*dt;
-    segmentDurations = dt*ones(1,temporalSlices);
-    integrationName = 'midpoint-expm';
+temporalSlices = 512;
+if ~strcmp(model.modulation.type,'square')
+    temporalSlices = tl_option('integer',tmmCfg,'temporalSlices',512,4);
 end
+[segmentMidpoints,segmentDurations,integrationName] = ...
+    tl_time_layers(model,temporalSlices);
 
 Uall = complex(zeros(nState,nState,nK));
 lambda = complex(zeros(nState,nK));
@@ -58,7 +54,7 @@ for ik = 1:nK
             kScan(ik));
     end
     [rightVectors,leftVectors,condition] = ...
-        normalize_eigenvectors(rightVectors,leftVectors);
+        tl_normalize_eigenvectors(rightVectors,leftVectors);
     raw = 1i*log(values)/T;
     folded = fold_frequency(raw,Omega);
 
@@ -66,7 +62,7 @@ for ik = 1:nK
         [~,order] = sortrows([real(folded),imag(folded)],[1 2]);
     else
         overlap = abs(previousLeft'*rightVectors);
-        order = best_permutation(overlap);
+        order = tl_match_modes(overlap);
         matched = overlap(sub2ind([nState nState],(1:nState).',order(:)));
         selectionConfidence(:,ik) = matched;
     end
@@ -110,75 +106,6 @@ result.tmmConfig = tmmCfg;
 end
 
 % -------------------------------------------------------------------------
-function [midpoints,durations] = square_segments(model)
-T = model.modulation.period;
-Omega = model.modulation.OmegaRadPerSec;
-phase = model.modulation.phase;
-duty = model.modulation.dutyCycle;
-phaseBoundaries = [0,2*pi*duty];
-times = [0,T];
-for boundary = phaseBoundaries
-    for order = -3:3
-        value = (boundary-phase+2*pi*order)/Omega;
-        if value > 64*eps(T) && value < T-64*eps(T)
-            times(end+1) = value; %#ok<AGROW>
-        end
-    end
-end
-times = unique(sort(times));
-durations = diff(times);
-midpoints = times(1:end-1)+durations/2;
-if any(durations <= 0) || abs(sum(durations)-T) > 128*eps(T)
-    error('Unable to construct exact square-wave time layers.');
-end
-end
-
-% -------------------------------------------------------------------------
-function [V,W,conditionNumber] = normalize_eigenvectors(V,W)
-nMode = size(V,2);
-conditionNumber = zeros(nMode,1);
-for mode = 1:nMode
-    nv = norm(V(:,mode));
-    nw = norm(W(:,mode));
-    if nv == 0 || nw == 0 || ~isfinite(nv) || ~isfinite(nw)
-        error('TMM returned an invalid left or right eigenvector.');
-    end
-    V(:,mode) = V(:,mode)/nv;
-    W(:,mode) = W(:,mode)/nw;
-    conditionNumber(mode) = ...
-        1/max(abs(W(:,mode)'*V(:,mode)),realmin);
-end
-end
-
-% -------------------------------------------------------------------------
-function order = best_permutation(overlap)
-n = size(overlap,1);
-candidate = perms(1:n);
-scores = zeros(size(candidate,1),1);
-rows = (1:n).';
-for index = 1:size(candidate,1)
-    cols = candidate(index,:).';
-    scores(index) = sum(overlap(sub2ind([n n],rows,cols)));
-end
-[~,best] = max(scores);
-order = candidate(best,:);
-end
-
-% -------------------------------------------------------------------------
 function folded = fold_frequency(omega,Omega)
 folded = mod(real(omega)+Omega/2,Omega)-Omega/2+1i*imag(omega);
-end
-
-% -------------------------------------------------------------------------
-function value = read_integer(cfg,name,defaultValue,minimumValue)
-if isfield(cfg,name) && ~isempty(cfg.(name))
-    value = cfg.(name);
-else
-    value = defaultValue;
-end
-if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
-        ~isfinite(value) || value ~= round(value) || value < minimumValue
-    error('tmmCfg.%s must be an integer not smaller than %d.', ...
-        name,minimumValue);
-end
 end

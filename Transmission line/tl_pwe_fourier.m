@@ -14,8 +14,8 @@ missing = requiredModel(~isfield(model,requiredModel));
 if ~isempty(missing)
     error('model is missing field(s): %s.',strjoin(missing,', '));
 end
-Mtime = read_integer(pweCfg,'Mtime',0);
-Nt = read_integer(pweCfg,'Nt',1);
+Mtime = tl_option('integer',pweCfg,'Mtime',[],0);
+Nt = tl_option('integer',pweCfg,'Nt',[],1);
 if Nt < 4*Mtime+1
     error('pweCfg.Nt must satisfy Nt >= 4*Mtime+1 = %d.',4*Mtime+1);
 end
@@ -62,17 +62,4 @@ fourier.capacitanceMaximumSampled = max(C);
 fourier.stateDimension = model.bulk.stateDimension;
 fourier.modelKind = model.kind;
 fourier.modelSnapshot = model.snapshot;
-end
-
-% -------------------------------------------------------------------------
-function value = read_integer(cfg,name,minimumValue)
-if ~isfield(cfg,name)
-    error('pweCfg.%s is required.',name);
-end
-value = cfg.(name);
-if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
-        ~isfinite(value) || value ~= round(value) || value < minimumValue
-    error('pweCfg.%s must be an integer not smaller than %d.', ...
-        name,minimumValue);
-end
 end

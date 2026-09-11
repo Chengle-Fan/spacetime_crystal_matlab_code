@@ -16,7 +16,7 @@ dt = period/stepsPerPeriod;
 simulationPeriods = 8;
 pulseCenter = 0.8*period;
 pulseWidth = 0.18*period;
-carrierHz = 0.65*model.paper.referenceFrequencyHz;
+carrierHz = model.modulation.fmHz/2;
 sourceVoltage = @(time) exp(-0.5*((time-pulseCenter)/pulseWidth).^2).* ...
     cos(2*pi*carrierHz*(time-pulseCenter));
 
@@ -42,14 +42,20 @@ xlabel('node position x/a');
 ylabel('t/T');
 title('Node voltage V (real part)');
 nexttile;
-imagesc(field.branch.x/model.cell.a,field.node.t/period, ...
-    real(field.branch.IAtNodeTime));
+if strcmp(model.kind,'crow')
+    magneticChannel = field.resonator;
+    currentLabel = 'Centered resonator current I_0 (real part)';
+else
+    magneticChannel = field.branch;
+    currentLabel = 'Centered series current I (real part)';
+end
+imagesc(magneticChannel.x/model.cell.a,field.node.t/period, ...
+    real(magneticChannel.IAtNodeTime));
 axis xy; colorbar;
 xlabel('branch position x/a');
 ylabel('t/T');
-title('Centered series current I (real part)');
+title(currentLabel);
 
 fprintf(['FDTD complete: dt*omegaMax=%.4g, records=%d, final relative ' ...
     'energy-ledger residual=%.3g.\n'],field.grid.stabilityNumber, ...
     numel(field.node.t),field.energy.relativeLedgerResidual(end));
-

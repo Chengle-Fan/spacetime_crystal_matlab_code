@@ -31,7 +31,7 @@ nK = numel(kScan);
 probeSignals = validate_signals(probeSignals,numel(time),nK);
 nProbe = size(probeSignals,2);
 
-T = read_positive(fftCfg,'temporalPeriod',[]);
+T = tl_option('positive',fftCfg,'temporalPeriod',[]);
 Omega = 2*pi/T;
 samplesPerPeriodFloat = T/dtRecord;
 samplesPerPeriod = round(samplesPerPeriodFloat);
@@ -49,12 +49,12 @@ if nTime ~= analysisPeriodCount*samplesPerPeriod
 end
 signals = double(probeSignals(analysisRows,:,:));
 
-zeroPaddingFactor = read_integer(fftCfg,'zeroPaddingFactor',4,1);
-dynamicRangeDb = read_positive(fftCfg,'dynamicRangeDb',60);
-activeThreshold = read_fraction_or_zero( ...
+zeroPaddingFactor = tl_option('integer',fftCfg,'zeroPaddingFactor',4,1);
+dynamicRangeDb = tl_option('positive',fftCfg,'dynamicRangeDb',60);
+activeThreshold = tl_option('fraction-or-zero', ...
     fftCfg,'activeColumnRelativeThreshold',1e-12);
-returnProbePower = read_logical(fftCfg,'returnProbePower',false);
-returnProbeSignals = read_logical(fftCfg,'returnProbeSignals',false);
+returnProbePower = tl_option('logical',fftCfg,'returnProbePower',false);
+returnProbeSignals = tl_option('logical',fftCfg,'returnProbeSignals',false);
 
 sampleIndex = (0:nTime-1).';
 window = 0.5-0.5*cos(2*pi*sampleIndex/nTime);
@@ -77,24 +77,8 @@ nFold = zeroPaddingFactor*analysisPeriodCount;
 if mod(nFft,nFold) ~= 0 || nFft/nFold ~= samplesPerPeriod
     error('The FFT and Floquet folding grids are not commensurate.');
 end
-foldedPowerUnshifted = zeros(nFold,nK);
-if returnProbePower
-    foldedProbePowerUnshifted = zeros(nFold,nProbe,nK);
-end
-for rawIndex = 1:nFft
-    foldedIndex = mod(rawIndex-1,nFold)+1;
-    foldedPowerUnshifted(foldedIndex,:) = ...
-        foldedPowerUnshifted(foldedIndex,:)+rawPowerUnshifted(rawIndex,:);
-    if returnProbePower
-        foldedProbePowerUnshifted(foldedIndex,:,:) = ...
-            foldedProbePowerUnshifted(foldedIndex,:,:)+ ...
-            rawProbePowerUnshifted(rawIndex,:,:);
-    end
-end
-
-foldedOrders = (-floor(nFold/2):ceil(nFold/2)-1).';
-foldedIndices = mod(foldedOrders,nFold)+1;
-foldedPower = foldedPowerUnshifted(foldedIndices,:);
+[foldedPower,foldedOrders] = tl_fold_power( ...
+    rawPowerUnshifted,0:nFft-1,nFold);
 foldedOmega = foldedOrders*Omega/nFold;
 
 rawOrders = (-floor(nFft/2):ceil(nFft/2)-1).';
@@ -161,8 +145,8 @@ result.interpretation = ['Finite-chain, finite-source, finite-window real-' ...
     'frequency response. Linewidth is not Im(omega).'];
 if returnProbePower
     result.rawProbePower = rawProbePowerUnshifted(rawIndices,:,:);
-    result.foldedProbePower = ...
-        foldedProbePowerUnshifted(foldedIndices,:,:);
+    result.foldedProbePower = tl_fold_power( ...
+        rawProbePowerUnshifted,0:nFft-1,nFold);
 end
 if returnProbeSignals
     result.probeSignals = probeSignals;
@@ -248,38 +232,4 @@ if periodCount < 2 || abs(periodCountFloat-periodCount) > ...
 end
 % MATLAB row nodes are one-based.  [start,end) excludes the repeated end.
 rows = (nodes(1)+1):nodes(2);
-end
-
-function value = read_positive(cfg,name,defaultValue)
-value = read_scalar(cfg,name,defaultValue);
-if value <= 0, error('fftCfg.%s must be positive.',name); end
-end
-
-function value = read_integer(cfg,name,defaultValue,minimum)
-value = read_scalar(cfg,name,defaultValue);
-if value ~= round(value) || value < minimum
-    error('fftCfg.%s must be an integer not smaller than %d.',name,minimum);
-end
-end
-
-function value = read_fraction_or_zero(cfg,name,defaultValue)
-value = read_scalar(cfg,name,defaultValue);
-if value < 0 || value >= 1
-    error('fftCfg.%s must lie in [0,1).',name);
-end
-end
-
-function value = read_logical(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if ~islogical(value) || ~isscalar(value)
-    error('fftCfg.%s must be a logical scalar.',name);
-end
-end
-
-function value = read_scalar(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if isempty(value) || ~isnumeric(value) || ~isscalar(value) || ...
-        ~isreal(value) || ~isfinite(value)
-    error('fftCfg.%s must be a finite real scalar.',name);
-end
 end

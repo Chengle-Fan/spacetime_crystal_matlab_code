@@ -22,6 +22,12 @@ testNames = { ...
     'finite-chain Gaussian k scan', ...
     'Bloch FFT versus TMM', ...
     'fit and component interfaces', ...
+    'CROW complete Floquet spectrum', ...
+    'square-wave phase periodicity', ...
+    'CROW loss ledger and driven-port termination', ...
+    'finite-Cblock anchors and component tolerances', ...
+    'finite-chain versus bulk dynamic evolution', ...
+    'short-boundary probe selection', ...
     'Code Analyzer'};
 passed = false(size(testNames));
 
@@ -233,6 +239,12 @@ assert(all(abs(probeFft.rawOmegaOverOmega(probeRawPeak)- ...
 assert(probeFft.probeCount == 2 && ...
     size(probeFft.rawProbePower,2) == 2, ...
     'Fixed-probe power was not retained per probe.');
+assert_relative(sum(probeFft.foldedProbePower,'all'), ...
+    sum(probeFft.rawProbePower,'all'),1e-12,'Floquet folding total power');
+assert(norm(reshape(sum(probeFft.foldedProbePower,2), ...
+    size(probeFft.foldedPower))-probeFft.foldedPower,'fro') < ...
+    1e-12*norm(probeFft.foldedPower,'fro'), ...
+    'Folded probe powers do not sum to the returned total.');
 assert(max(abs(probeFft.rawColumnPower- ...
     probeFftPadded.rawColumnPower)) <= ...
     1e-12*max(probeFft.rawColumnPower) && ...
@@ -374,11 +386,150 @@ assert(selection.monteCarlo.sampleCount >= 1000 && ...
 passed(11) = true;
 fprintf('  PASS  %s\n',testNames{11});
 
-%% Code Analyzer
-mFiles = dir('*.m');
+%% Both CROW circuit limits must retain every independent Floquet mode.
+crowSpectralError = 0;
+for blockCapacitance = [200e-12 Inf]
+    spectralModel = tl_build_model(struct('topology','crow', ...
+        'allowAssumptions',true,'Cblock',blockCapacitance));
+    spectralK = [0 .2 .5 .8 1]*pi/spectralModel.cell.a;
+    spectralPwe = tl_pwe_bands(tl_pwe_fourier(spectralModel, ...
+        struct('Mtime',5,'Nt',256)),spectralModel,spectralK,struct());
+    spectralTmm = tl_tmm_bands(spectralModel,spectralK, ...
+        struct('temporalSlices',1024));
+    crowSpectralError = max(crowSpectralError,spectral_set_error( ...
+        spectralPwe.omegaSelected,spectralTmm.omegaFolded, ...
+        spectralModel.modulation.OmegaRadPerSec));
+end
+assert(crowSpectralError < 1e-5, ...
+    'CROW PWE omitted a mode or selected duplicate Floquet replicas.');
+passed(12) = true;
+fprintf('  PASS  %s (error/Omega %.3g)\n',testNames{12},crowSpectralError);
+
+%% An arbitrary phase offset must not lose square-wave interfaces.
+squareCfg = struct('topology','crow','allowAssumptions',true, ...
+    'modulationType','square','dutyCycle',0.31,'modulationPhase',0.43);
+squareModel = tl_build_model(squareCfg);
+squareK = 0.37*pi/squareModel.cell.a;
+squareBase = tl_tmm_bands(squareModel,squareK,struct());
+for turns = [-19 23]
+    squareCfg.modulationPhase = 0.43+turns*2*pi;
+    shiftedModel = tl_build_model(squareCfg);
+    shiftedTmm = tl_tmm_bands(shiftedModel,squareK,struct());
+    shiftedFft = tl_bloch_fft_bands(shiftedModel,squareK, ...
+        struct('temporalCellCount',8));
+    assert(norm(shiftedTmm.U-squareBase.U,'fro')/ ...
+        norm(squareBase.U,'fro') < 1e-11);
+    assert(norm(shiftedFft.monodromy-shiftedTmm.U,'fro')/ ...
+        norm(shiftedTmm.U,'fro') < 1e-12);
+end
+passed(13) = true;
+fprintf('  PASS  %s\n',testNames{13});
+
+%% Damped CROW energy balance converges with timestep; no double termination.
+ledgerModel = tl_build_model(struct('topology','crow', ...
+    'allowAssumptions',true,'cellCount',8,'deltaC',0,'R0',1.5));
+ledgerResidual = zeros(1,2);
+for refinement = 1:2
+    ledgerCfg = struct('dt',ledgerModel.modulation.period/(64*refinement), ...
+        'nSteps',8*64*refinement,'modulationEnabled',false, ...
+        'boundaryType','periodic','V0',ones(8,1));
+    ledgerField = tl_fdtd1d(ledgerModel,ledgerCfg);
+    assert(ledgerField.energy.resonatorDissipation(end) > 0.5* ...
+        ledgerField.energy.total(1));
+    ledgerResidual(refinement) = max(abs(ledgerField.energy.ledgerResidual))/ ...
+        ledgerField.energy.total(1);
+end
+assert(ledgerResidual(2) < 0.35*ledgerResidual(1) && ...
+    ledgerResidual(2) < 1e-3,'CROW R0 energy balance did not converge.');
+portModel = tl_build_model(struct('topology','sspp', ...
+    'allowAssumptions',true,'cellCount',8,'deltaC',0, ...
+    'Zsource',50,'Zload',50));
+portCfg = struct('dt',portModel.modulation.period/128,'nSteps',256, ...
+    'modulationEnabled',false,'boundaryType','matched', ...
+    'source',struct('type','thevenin','node',1,'impedance',75, ...
+    'waveformFcn',@(t) exp(-((t/portModel.modulation.period-0.5)/0.15).^2)));
+leftPort = tl_fdtd1d(portModel,portCfg);
+portCfg.source.node = 8;
+rightPort = tl_fdtd1d(portModel,portCfg);
+assert(norm(leftPort.node.V-fliplr(rightPort.node.V),'fro')/ ...
+    norm(leftPort.node.V,'fro') < 1e-12,'Driven ports are not reciprocal.');
+% Changing the unused termination at a driven port must not change its load.
+changedPort = tl_build_model(struct('topology','sspp', ...
+    'allowAssumptions',true,'cellCount',8,'deltaC',0, ...
+    'Zsource',50,'Zload',123));
+changedField = tl_fdtd1d(changedPort,portCfg);
+assert(isequal(rightPort.node.V,changedField.node.V), ...
+    'The driven port still includes a duplicate terminal conductance.');
+passed(14) = true;
+fprintf('  PASS  %s (ledger residual %.3g)\n',testNames{14},ledgerResidual(2));
+
+%% Analytic roots, fit anchors and tolerance outputs use the same circuit.
+anchorCfg = struct('topology','crow','allowAssumptions',true,'deltaC',0);
+anchorModel = tl_build_model(anchorCfg);
+for ka = [0 pi]
+    [Ac,Ai] = anchorModel.functions.bulkMatrices(ka/anchorModel.cell.a);
+    exact = max(real(1i*eig(Ac+Ai/anchorModel.shunt.totalC0)))/(2*pi);
+    if ka == 0, expected = anchorModel.derived.staticCenterFrequencyHz;
+    else, expected = anchorModel.derived.staticBoundaryFrequencyHz; end
+    assert_relative(exact,expected,1e-12,'CROW analytic anchor');
+end
+anchorData = struct('anchors',struct( ...
+    'fcolHz',anchorModel.derived.staticCenterFrequencyHz, ...
+    'fcolUncertaintyHz',1e4, ...
+    'boundaryFrequencyHz',anchorModel.derived.staticBoundaryFrequencyHz, ...
+    'boundaryUncertaintyHz',1e4));
+fitAnchorCfg = anchorCfg;
+fitAnchorCfg.Cblock = 240e-12;
+anchorFit = tl_fit_parameters(fitAnchorCfg,anchorData, ...
+    struct('parameterNames',{{'Cblock'}},'maxIterations',100));
+assert_relative(anchorFit.parameterValues.Cblock,200e-12,1e-5, ...
+    'finite-Cblock anchor fit');
+anchorSelection = tl_select_components(anchorModel,struct(),struct());
+assert_relative(anchorSelection.monteCarlo.boundaryFrequencyHz(2), ...
+    anchorModel.derived.staticBoundaryFrequencyHz,1e-12,'CROW tolerance edge');
+assert_relative(anchorSelection.monteCarlo.fcolHz(2), ...
+    anchorModel.derived.staticCenterFrequencyHz,1e-12,'CROW tolerance center');
+passed(15) = true;
+fprintf('  PASS  %s\n',testNames{15});
+
+%% Non-paper parameters, mutual coupling and loss: finite chain versus bulk.
+dynamicErrors = dynamic_circuit_errors();
+assert(all(dynamicErrors(:,2) < 0.35*dynamicErrors(:,1)) && ...
+    all(dynamicErrors(:,2) < 2e-4), ...
+    'Finite-chain evolution does not converge to the same bulk circuit.');
+passed(16) = true;
+fprintf('  PASS  %s (maximum error %.3g)\n',testNames{16},max(dynamicErrors(:,2)));
+
+%% Short boundaries support any number of interior probes, in any order.
+shortCfg = packetScanCfg;
+shortCfg.boundaryType = 'short';
+shortCfg.kScan = packetK(2);
+shortCfg.nSteps = 2;
+for probes = {64,[62 64],[62 64 66],[59 62 64 66 69]}
+    shortCfg.probeNodeIndices = probes{1};
+    shortScan = tl_fdtd_gaussian_k_scan(packetModel,shortCfg);
+    assert(size(shortScan.probeSignals,2) == numel(probes{1}) && ...
+        all(isfinite(shortScan.probeSignals),'all'));
+    assert(all(shortScan.representativeField.node.V(:,[1 end]) == 0,'all'));
+end
+for probes = {[128 64],[64 1],[64 66 128]}
+    shortCfg.probeNodeIndices = probes{1};
+    rejected = false;
+    try
+        tl_fdtd_gaussian_k_scan(packetModel,shortCfg);
+    catch exception
+        rejected = contains(exception.message,'short-circuited terminal');
+    end
+    assert(rejected,'A voltage probe at a shorted endpoint was accepted.');
+end
+passed(17) = true;
+fprintf('  PASS  %s\n',testNames{17});
+
+%% Code Analyzer (include shared private helpers).
+mFiles = [dir('*.m');dir(fullfile('private','*.m'))];
 analyzerCount = 0;
 for index = 1:numel(mFiles)
-    issues = checkcode(mFiles(index).name,'-id');
+    issues = checkcode(fullfile(mFiles(index).folder,mFiles(index).name),'-id');
     if ~isempty(issues)
         fprintf('  Code Analyzer: %s has %d issue(s).\n', ...
             mFiles(index).name,numel(issues));
@@ -386,8 +537,8 @@ for index = 1:numel(mFiles)
     analyzerCount = analyzerCount+numel(issues);
 end
 assert(analyzerCount == 0,'Code Analyzer reported %d issue(s).',analyzerCount);
-passed(12) = true;
-fprintf('  PASS  %s\n',testNames{12});
+passed(18) = true;
+fprintf('  PASS  %s\n',testNames{18});
 
 summary = struct('packageVersion','3.1.0', ...
     'matlabVersion',version,'moduleDirectory',moduleDirectory, ...
@@ -396,6 +547,9 @@ summary = struct('packageVersion','3.1.0', ...
     'fdtdEnergyDrift',energyDrift, ...
     'finitePacketErrorNormalized',packetError, ...
     'blochErrorNormalized',blochError);
+summary.crowPweTmmErrorNormalized = crowSpectralError;
+summary.crowLossLedgerResidual = ledgerResidual;
+summary.finiteBulkDynamicErrors = dynamicErrors;
 fprintf('Transmission-line validation passed: %d/%d tests.\n', ...
     sum(passed),numel(passed));
 clear cleanupDirectory;
@@ -432,4 +586,54 @@ end
 
 function folded = fold_frequency(omega,Omega)
 folded = mod(real(omega)+Omega/2,Omega)-Omega/2+1i*imag(omega);
+end
+
+function errors = dynamic_circuit_errors()
+errors = zeros(3,2);
+for circuit = 1:3
+    cfg = struct('topology','crow','allowAssumptions',true,'cellCount',12, ...
+        'a',7e-3,'Ls',90e-9,'mutualS',7e-9,'C0',22e-12,'Cpar',1e-12, ...
+        'deltaC',3e-12,'fmHz',620e6,'L0',13e-9,'Cblock',150e-12, ...
+        'Rs',0.2,'Gp',1e-4,'R0',0.4);
+    if circuit == 1
+        cfg.topology = 'sspp';
+    elseif circuit == 2
+        cfg.Cblock = Inf;
+    end
+    model = tl_build_model(cfg);
+    k = 2*pi/(model.cell.a*model.finite.cellCount);
+    T = model.modulation.period;
+    [~,~,Lk] = model.functions.bulkMatrices(k);
+    scales = zeros(model.bulk.stateDimension,1);
+    scales(1:2) = [sqrt(model.functions.capacitanceBulk(0));sqrt(Lk)];
+    if circuit > 1, scales(3) = sqrt(model.resonator.L0); end
+    if circuit == 3, scales(4) = sqrt(model.resonator.Cblock); end
+    initial = scales.*(1:numel(scales)).';
+    reference = tl_tmm_bands(model,k,struct('temporalSlices',4096));
+    target = reference.U*initial;
+    phase = exp(1i*k*model.cell.a*(0:model.finite.cellCount-1)).';
+    for refinement = 1:2
+        steps = 128*refinement;
+        dt = T/steps;
+        half = expm(-model.functions.bulkStateMatrix(k,0)*dt/2)*initial;
+        fdtdCfg = struct('dt',dt,'nSteps',steps,'boundaryType','periodic', ...
+            'Q0',initial(1)*phase,'IHalf0',half(2)/Lk*phase);
+        if circuit > 1
+            fdtdCfg.I0Half0 = half(3)/model.resonator.L0*phase;
+        end
+        if circuit == 3, fdtdCfg.Qblock0 = initial(4)*phase; end
+        field = tl_fdtd1d(model,fdtdCfg);
+        state = zeros(size(initial));
+        state(1) = mean(field.node.Q(end,:)./phase.');
+        state(2) = Lk*mean(field.branch.IAtNodeTime(end,:)./phase.');
+        if circuit > 1
+            state(3) = model.resonator.L0* ...
+                mean(field.resonator.IAtNodeTime(end,:)./phase.');
+        end
+        if circuit == 3
+            state(4) = mean(field.resonator.Qblock(end,:)./phase.');
+        end
+        errors(circuit,refinement) = norm((state-target)./scales)/norm(target./scales);
+    end
+end
 end

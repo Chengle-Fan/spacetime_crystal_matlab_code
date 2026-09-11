@@ -18,16 +18,16 @@ if nargin ~= 3 || ~isstruct(model) || ~isscalar(model) || ...
         ~isstruct(selectCfg) || ~isscalar(selectCfg)
     error('Use tl_select_components(model,catalog,selectCfg).');
 end
-retainedSidebandOrder = read_integer( ...
+retainedSidebandOrder = tl_option('integer', ...
     selectCfg,'retainedSidebandOrder',3,0);
 defaultMaximum = model.derived.omegaMaximumEstimate/(2*pi)+ ...
     retainedSidebandOrder*model.modulation.fmHz;
-maximumFrequencyHz = read_positive( ...
+maximumFrequencyHz = tl_option('positive', ...
     selectCfg,'maximumFrequencyHz',defaultMaximum);
-srfSafetyFactor = read_positive(selectCfg,'srfSafetyFactor',1.5);
+srfSafetyFactor = tl_option('positive',selectCfg,'srfSafetyFactor',1.5);
 minimumSrfHz = maximumFrequencyHz*srfSafetyFactor;
-nSamples = read_integer(selectCfg,'monteCarloSamples',1000,1000);
-randomSeed = read_integer(selectCfg,'randomSeed',260417408,0);
+nSamples = tl_option('integer',selectCfg,'monteCarloSamples',1000,1000);
+randomSeed = tl_option('integer',selectCfg,'randomSeed',260417408,0);
 
 capacitors = normalize_catalog(catalog,'capacitors','F');
 inductors = normalize_catalog(catalog,'inductors','H');
@@ -63,12 +63,12 @@ checks.allSelectedSrfCompliant = all([selections.srfCompliant] | ...
     strcmp({selections.status},'target-only'));
 checks.peakReverseVoltageKnown = isfield(selectCfg,'peakReverseVoltage');
 if checks.peakReverseVoltageKnown
-    peakReverseVoltage = read_nonnegative(selectCfg,'peakReverseVoltage',0);
+    peakReverseVoltage = tl_option('nonnegative',selectCfg,'peakReverseVoltage',0);
 else
     peakReverseVoltage = NaN;
 end
 if isfield(selectCfg,'maximumAllowedReverseVoltage')
-    maximumAllowedReverseVoltage = read_positive( ...
+    maximumAllowedReverseVoltage = tl_option('positive', ...
         selectCfg,'maximumAllowedReverseVoltage',[]);
     checks.reverseVoltageCompliant = checks.peakReverseVoltageKnown && ...
         peakReverseVoltage <= maximumAllowedReverseVoltage;
@@ -211,35 +211,45 @@ function output = tolerance_monte_carlo(model,selections,count,cfg)
 if strcmp(model.kind,'crow')
     [L0,L0Tolerance] = selected_value( ...
         selections,'L0',model.resonator.L0,0);
+    [Cblock,CblockTolerance] = selected_value( ...
+        selections,'Cblock',model.resonator.Cblock,0);
 else
-    L0 = NaN;
+    L0 = Inf;
     L0Tolerance = 0;
+    Cblock = Inf;
+    CblockTolerance = 0;
 end
-mutualTolerance = read_nonnegative(cfg,'mutualToleranceFraction',0);
+mutualTolerance = tl_option('nonnegative',cfg,'mutualToleranceFraction',0);
 LsSamples = Ls*(1+LsTolerance*(2*rand(count,1)-1));
 C0Samples = C0*(1+C0Tolerance*(2*rand(count,1)-1));
 CtotalSamples = C0Samples+model.shunt.Cpar;
 SSamples = model.series.mutualS* ...
     (1+mutualTolerance*(2*rand(count,1)-1));
 valid = LsSamples > 2*abs(SSamples) & C0Samples > 0 & CtotalSamples > 0;
+if strcmp(model.kind,'crow')
+    L0Samples = L0*(1+L0Tolerance*(2*rand(count,1)-1));
+    CblockSamples = Cblock*(1+CblockTolerance*(2*rand(count,1)-1));
+    valid = valid & L0Samples > 0 & CblockSamples > 0;
+else
+    L0Samples = Inf(count,1);
+    CblockSamples = Inf(count,1);
+end
 boundary = nan(count,1);
 impedance = nan(count,1);
-boundary(valid) = 2./sqrt((LsSamples(valid)-2*SSamples(valid)).* ...
-    CtotalSamples(valid))/(2*pi);
+boundary(valid) = tl_static_omega(pi,LsSamples(valid),SSamples(valid), ...
+    CtotalSamples(valid),L0Samples(valid),CblockSamples(valid))/(2*pi);
 impedance(valid) = sqrt(LsSamples(valid)./CtotalSamples(valid));
 output.sampleCount = count;
-output.randomSeed = read_integer(cfg,'randomSeed',260417408,0);
+output.randomSeed = tl_option('integer',cfg,'randomSeed',260417408,0);
 output.validFraction = mean(valid);
 output.boundaryFrequencyHz = percentiles(boundary(valid),[5 50 95]);
 output.characteristicImpedanceOhm = percentiles( ...
     impedance(valid),[5 50 95]);
 if strcmp(model.kind,'crow')
-    L0Samples = L0*(1+L0Tolerance*(2*rand(count,1)-1));
-    validCrow = valid & L0Samples > 0;
     fcol = nan(count,1);
-    fcol(validCrow) = 1./sqrt(L0Samples(validCrow).* ...
-        CtotalSamples(validCrow))/(2*pi);
-    output.fcolHz = percentiles(fcol(validCrow),[5 50 95]);
+    fcol(valid) = tl_static_omega(0,LsSamples(valid),SSamples(valid), ...
+        CtotalSamples(valid),L0Samples(valid),CblockSamples(valid))/(2*pi);
+    output.fcolHz = percentiles(fcol(valid),[5 50 95]);
 end
 output.percentileLevels = [5 50 95];
 output.maximumDeviceVoltage = [NaN NaN NaN];
@@ -305,30 +315,5 @@ function value = nonnegative_value(value,label)
 if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
         ~isfinite(value) || value < 0
     error('Candidate %s must be a nonnegative finite real scalar.',label);
-end
-end
-
-% -------------------------------------------------------------------------
-function value = read_positive(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if isempty(value) || ~isnumeric(value) || ~isscalar(value) || ...
-        ~isreal(value) || ~isfinite(value) || value <= 0
-    error('selectCfg.%s must be a positive finite real scalar.',name);
-end
-end
-
-function value = read_nonnegative(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
-        ~isfinite(value) || value < 0
-    error('selectCfg.%s must be a nonnegative finite real scalar.',name);
-end
-end
-
-function value = read_integer(cfg,name,defaultValue,minimum)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
-        ~isfinite(value) || value ~= round(value) || value < minimum
-    error('selectCfg.%s must be an integer not smaller than %d.',name,minimum);
 end
 end

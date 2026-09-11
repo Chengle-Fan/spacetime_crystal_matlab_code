@@ -23,6 +23,7 @@ function field = tl_fdtd1d(model,fdtdCfg)
 %   source.node        node index
 %   source.waveformFcn function handle returning A or V versus time
 %   source.impedance   positive ohms for a Thevenin source
+%                      replaces the matched termination at a driven endpoint
 %   stabilityAudit     exact audit returned by an identical model/topology
 %                      run; bare frequency estimates are never accepted
 %
@@ -30,6 +31,9 @@ function field = tl_fdtd1d(model,fdtdCfg)
 % IAtNodeTime is the centered average of the adjacent half-time currents.
 % The requested final state is recorded even when recordEvery does not
 % divide nSteps.
+% energy.resonatorDissipation includes CROW R0 loss. Work/loss integrals
+% use midpoint samples; the centered physical-energy ledger is approximate
+% and should converge as dt is reduced. Complex states use |V|^2/|I|^2.
 
 if nargin ~= 2 || ~isstruct(model) || ~isscalar(model) || ...
         ~isstruct(fdtdCfg) || ~isscalar(fdtdCfg)
@@ -42,15 +46,15 @@ if ~isempty(missing)
     error('model is missing field(s): %s.',strjoin(missing,', '));
 end
 
-dt = read_positive(fdtdCfg,'dt',[]);
-nSteps = read_integer(fdtdCfg,'nSteps',[],1);
-recordEvery = read_integer(fdtdCfg,'recordEvery',1,1);
-boundaryType = read_text(fdtdCfg,'boundaryType','open', ...
+dt = tl_option('positive',fdtdCfg,'dt',[]);
+nSteps = tl_option('integer',fdtdCfg,'nSteps',[],1);
+recordEvery = tl_option('integer',fdtdCfg,'recordEvery',1,1);
+boundaryType = tl_option('text',fdtdCfg,'boundaryType','open', ...
     {'open','matched','periodic','short'});
-precision = read_text(fdtdCfg,'precision','double',{'double','single'});
-modulationEnabled = read_logical(fdtdCfg,'modulationEnabled',true);
-modulationStart = read_nonnegative(fdtdCfg,'modulationStart',0);
-modulationEnd = read_positive_or_inf(fdtdCfg,'modulationEnd',Inf);
+precision = tl_option('text',fdtdCfg,'precision','double',{'double','single'});
+modulationEnabled = tl_option('logical',fdtdCfg,'modulationEnabled',true);
+modulationStart = tl_option('nonnegative',fdtdCfg,'modulationStart',0);
+modulationEnd = tl_option('positive-or-inf',fdtdCfg,'modulationEnd',Inf);
 if modulationEnd <= modulationStart
     error('fdtdCfg.modulationEnd must be greater than modulationStart.');
 end
@@ -130,11 +134,13 @@ energyMagnetic = zeros(1,nRecord);
 cumulativeSource = zeros(1,nRecord);
 cumulativePump = zeros(1,nRecord);
 cumulativeSeriesLoss = zeros(1,nRecord);
+cumulativeResonatorLoss = zeros(1,nRecord);
 cumulativeShuntLoss = zeros(1,nRecord);
 cumulativePortLoss = zeros(1,nRecord);
 sourceWork = 0;
 pumpWork = 0;
 seriesLoss = 0;
+resonatorLoss = 0;
 shuntLoss = 0;
 portLoss = 0;
 
@@ -181,6 +187,8 @@ for step = 0:nSteps
                 cast(i0Plus(nodeSelection),precision);
             history.resonatorPhiHalf(recordIndex,:) = ...
                 cast(phi0Plus(nodeSelection),precision);
+            history.resonatorIAtNode(recordIndex,:) = ...
+                cast(i0Centered(nodeSelection),precision);
             if ~isinf(model.resonator.Cblock)
                 history.resonatorQblock(recordIndex,:) = ...
                     cast(qblock(nodeSelection),precision);
@@ -195,6 +203,7 @@ for step = 0:nSteps
         cumulativeSource(recordIndex) = sourceWork;
         cumulativePump(recordIndex) = pumpWork;
         cumulativeSeriesLoss(recordIndex) = seriesLoss;
+        cumulativeResonatorLoss(recordIndex) = resonatorLoss;
         cumulativeShuntLoss(recordIndex) = shuntLoss;
         cumulativePortLoss(recordIndex) = portLoss;
         recordIndex = recordIndex+1;
@@ -230,9 +239,12 @@ for step = 0:nSteps
     voltageCentered = (voltage+nextVoltage)/2;
     sourceWork = sourceWork+dt*real(conj(voltageCentered(source.node))* ...
         sourceCurrent);
-    pumpWork = pumpWork+0.5*sum(abs(q).^2.* ...
+    pumpWork = pumpWork+0.5*sum(real(conj(q).*qNext).* ...
         (1./nextCapacitance-1./capacitance));
-    seriesLoss = seriesLoss+dt*Rs*sum(abs(currentCentered).^2);
+    seriesLoss = seriesLoss+dt*Rs*sum(abs(currentPlus).^2);
+    if strcmp(model.kind,'crow')
+        resonatorLoss = resonatorLoss+dt*R0*sum(abs(i0Plus).^2);
+    end
     shuntLoss = shuntLoss+dt*sum(Gphysical.*abs(voltageCentered).^2);
     portLoss = portLoss+dt*sum((Gport+Gsource).* ...
         abs(voltageCentered).^2);
@@ -262,24 +274,26 @@ field.branch = struct('x',branchX(branchSelection), ...
 if strcmp(model.kind,'crow')
     field.resonator = struct('x',nodeX(nodeSelection),'tHalf',nodeTime+dt/2, ...
         'IHalf',history.resonatorIHalf, ...
-        'PhiHalf',history.resonatorPhiHalf);
+        'PhiHalf',history.resonatorPhiHalf,'t',nodeTime, ...
+        'IAtNodeTime',history.resonatorIAtNode);
     if ~isinf(model.resonator.Cblock)
         field.resonator.Qblock = history.resonatorQblock;
         field.resonator.Vblock = history.resonatorVblock;
-        field.resonator.t = nodeTime;
     end
 end
 
 energyScale = max([abs(energyTotal),abs(cumulativeSource), ...
     abs(cumulativePump),abs(cumulativeSeriesLoss), ...
-    abs(cumulativeShuntLoss),abs(cumulativePortLoss),realmin]);
+    abs(cumulativeResonatorLoss),abs(cumulativeShuntLoss), ...
+    abs(cumulativePortLoss),realmin]);
 ledgerResidual = (energyTotal-energyTotal(1))-cumulativeSource- ...
     cumulativePump+cumulativeSeriesLoss+cumulativeShuntLoss+ ...
-    cumulativePortLoss;
+    cumulativePortLoss+cumulativeResonatorLoss;
 field.energy = struct('t',nodeTime,'total',energyTotal, ...
     'electric',energyElectric,'magnetic',energyMagnetic, ...
     'sourceWork',cumulativeSource,'pumpWork',cumulativePump, ...
     'seriesDissipation',cumulativeSeriesLoss, ...
+    'resonatorDissipation',cumulativeResonatorLoss, ...
     'shuntDissipation',cumulativeShuntLoss, ...
     'portDissipation',cumulativePortLoss,'ledgerResidual',ledgerResidual, ...
     'relativeLedgerResidual',ledgerResidual/energyScale);
@@ -418,8 +432,8 @@ end
 if ~isstruct(input) || ~isscalar(input)
     error('fdtdCfg.source must be a scalar struct.');
 end
-source.type = read_text(input,'type','none',{'none','current','thevenin'});
-source.node = read_integer(input,'node',1,1);
+source.type = tl_option('text',input,'type','none',{'none','current','thevenin'});
+source.node = tl_option('integer',input,'node',1,1);
 if source.node > nNode
     error('fdtdCfg.source.node exceeds the finite node count.');
 end
@@ -437,7 +451,7 @@ else
     end
     source.waveformFcn = input.waveformFcn;
     if strcmp(source.type,'thevenin')
-        source.impedance = read_positive(input,'impedance',model.ports.Zsource);
+        source.impedance = tl_option('positive',input,'impedance',model.ports.Zsource);
     else
         source.impedance = Inf;
     end
@@ -453,12 +467,12 @@ if strcmp(boundary,'matched')
     Gport(end) = Gport(end)+1/model.ports.Zload;
 end
 if strcmp(source.type,'thevenin')
-    alreadyPresent = strcmp(boundary,'matched') && source.node == 1 && ...
-        abs(source.impedance-model.ports.Zsource) <= ...
-        100*eps(max(source.impedance,model.ports.Zsource));
-    if ~alreadyPresent
-        Gsource(source.node) = 1/source.impedance;
+    % A Thevenin generator replaces the termination at its driven port.
+    % Interior sources remain additional shunts on the finite chain.
+    if strcmp(boundary,'matched') && any(source.node == [1 nNode])
+        Gport(source.node) = 0;
     end
+    Gsource(source.node) = 1/source.impedance;
 end
 end
 
@@ -574,6 +588,7 @@ history.branchIAtNode = zeros(nRecord,nBranch,precision);
 if strcmp(model.kind,'crow')
     history.resonatorIHalf = zeros(nRecord,nNode,precision);
     history.resonatorPhiHalf = zeros(nRecord,nNode,precision);
+    history.resonatorIAtNode = zeros(nRecord,nNode,precision);
     if ~isinf(model.resonator.Cblock)
         history.resonatorQblock = zeros(nRecord,nNode,precision);
         history.resonatorVblock = zeros(nRecord,nNode,precision);
@@ -622,54 +637,5 @@ function assert_on_time_grid(value,dt,label)
 gridIndex = value/dt;
 if abs(gridIndex-round(gridIndex)) > 100*eps(max(1,abs(gridIndex)))
     error('fdtdCfg.%s must lie on an integer FDTD time node.',label);
-end
-end
-
-% -------------------------------------------------------------------------
-function value = read_text(cfg,name,defaultValue,allowed)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if isstring(value) && isscalar(value), value = char(value); end
-if ~ischar(value) || size(value,1) ~= 1
-    error('%s must be a text scalar.',name);
-end
-match = strcmpi(value,allowed);
-if ~any(match), error('%s must be one of: %s.',name,strjoin(allowed,', ')); end
-value = allowed{find(match,1)};
-end
-
-function value = read_logical(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if ~islogical(value) || ~isscalar(value), error('%s must be a logical scalar.',name); end
-end
-
-function value = read_positive(cfg,name,defaultValue)
-value = read_real(cfg,name,defaultValue);
-if value <= 0, error('%s must be positive.',name); end
-end
-
-function value = read_nonnegative(cfg,name,defaultValue)
-value = read_real(cfg,name,defaultValue);
-if value < 0, error('%s must be nonnegative.',name); end
-end
-
-function value = read_positive_or_inf(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || isnan(value) || value <= 0
-    error('%s must be positive and may be Inf.',name);
-end
-end
-
-function value = read_integer(cfg,name,defaultValue,minimum)
-value = read_real(cfg,name,defaultValue);
-if value ~= round(value) || value < minimum
-    error('%s must be an integer not smaller than %d.',name,minimum);
-end
-end
-
-function value = read_real(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if isempty(value) || ~isnumeric(value) || ~isscalar(value) || ...
-        ~isreal(value) || ~isfinite(value)
-    error('%s must be a finite real scalar.',name);
 end
 end

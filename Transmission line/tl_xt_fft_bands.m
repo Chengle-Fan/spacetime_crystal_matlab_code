@@ -19,17 +19,17 @@ if nargin ~= 3 || ~isstruct(fftCfg) || ~isscalar(fftCfg)
     error(['Use tl_xt_fft_bands(observation,referenceObservation,' ...
         'fftCfg).']);
 end
-a = read_positive(fftCfg,'cellPeriod',[]);
-T = read_positive(fftCfg,'temporalPeriod',[]);
-zeroPaddingTime = read_integer(fftCfg,'zeroPaddingTime',2,1);
-zeroPaddingSpace = read_integer(fftCfg,'zeroPaddingSpace',2,1);
-dynamicRangeDb = read_positive(fftCfg,'dynamicRangeDb',60);
-referenceThresholdDb = read_positive(fftCfg,'referenceThresholdDb',40);
-ridgeThresholdDb = read_positive(fftCfg,'ridgeThresholdDb',30);
-ridgeCount = read_integer(fftCfg,'ridgeCount',2,1);
-ridgeJumpBins = read_integer(fftCfg,'ridgeJumpBins',6,1);
-ridgeExclusionBins = read_integer(fftCfg,'ridgeExclusionBins',3,0);
-removeTemporalMean = read_logical(fftCfg,'removeTemporalMean',false);
+a = tl_option('positive',fftCfg,'cellPeriod',[]);
+T = tl_option('positive',fftCfg,'temporalPeriod',[]);
+zeroPaddingTime = tl_option('integer',fftCfg,'zeroPaddingTime',2,1);
+zeroPaddingSpace = tl_option('integer',fftCfg,'zeroPaddingSpace',2,1);
+dynamicRangeDb = tl_option('positive',fftCfg,'dynamicRangeDb',60);
+referenceThresholdDb = tl_option('positive',fftCfg,'referenceThresholdDb',40);
+ridgeThresholdDb = tl_option('positive',fftCfg,'ridgeThresholdDb',30);
+ridgeCount = tl_option('integer',fftCfg,'ridgeCount',2,1);
+ridgeJumpBins = tl_option('integer',fftCfg,'ridgeJumpBins',6,1);
+ridgeExclusionBins = tl_option('integer',fftCfg,'ridgeExclusionBins',3,0);
+removeTemporalMean = tl_option('logical',fftCfg,'removeTemporalMean',false);
 
 obs = validate_observation(observation,a,'observation');
 ref = validate_observation(referenceObservation,a,'referenceObservation');
@@ -47,7 +47,7 @@ if periodCount < 1 || abs(periodCountFloat-periodCount) > ...
 end
 if isfield(fftCfg,'maximumPhysicalOmega') && ...
         ~isempty(fftCfg.maximumPhysicalOmega)
-    maximumPhysicalOmega = read_positive( ...
+    maximumPhysicalOmega = tl_option('positive', ...
         fftCfg,'maximumPhysicalOmega',[]);
     if maximumPhysicalOmega >= pi/dt
         error(['fftCfg.maximumPhysicalOmega must be below the recorded ' ...
@@ -81,13 +81,10 @@ if foldBinCount < 1 || abs(foldBinCount- ...
         zeroPaddingTime*periodCount) > 0
     error('The time grid is not commensurate with the Floquet folding grid.');
 end
-[foldedChannelPower,foldedOrders] = fold_temporal_power( ...
+[foldedChannelPower,foldedOrders] = tl_fold_power( ...
     foldingChannelPower,timeOrders,foldBinCount);
-[referenceFoldedChannelPower,referenceOrders] = fold_temporal_power( ...
+referenceFoldedChannelPower = tl_fold_power( ...
     foldingReferenceChannelPower,timeOrders,foldBinCount);
-if ~isequal(foldedOrders,referenceOrders)
-    error('Internal reference folding mismatch.');
-end
 foldedOmega = foldedOrders*Omega/foldBinCount;
 
 rawPower = sum(rawChannelPower,3);
@@ -330,19 +327,6 @@ power = abs(spectrum).^2;
 end
 
 % -------------------------------------------------------------------------
-function [folded,foldedOrders] = fold_temporal_power( ...
-        raw,timeOrders,foldCount)
-foldedNatural = zeros(foldCount,size(raw,2),size(raw,3));
-for row = 1:numel(timeOrders)
-    target = mod(timeOrders(row),foldCount)+1;
-    foldedNatural(target,:,:) = foldedNatural(target,:,:)+raw(row,:,:);
-end
-foldedOrders = (-floor(foldCount/2):ceil(foldCount/2)-1).';
-indices = mod(foldedOrders,foldCount)+1;
-folded = foldedNatural(indices,:,:);
-end
-
-% -------------------------------------------------------------------------
 function [indices,powers] = extract_ridges( ...
         power,support,count,jumpBins,exclusionBins)
 [nOmega,nK] = size(power);
@@ -410,32 +394,4 @@ end
 function window = periodic_hann(count)
 index = (0:count-1).';
 window = 0.5-0.5*cos(2*pi*index/count);
-end
-
-% -------------------------------------------------------------------------
-function value = read_positive(cfg,name,defaultValue)
-value = read_scalar(cfg,name,defaultValue);
-if value <= 0, error('fftCfg.%s must be positive.',name); end
-end
-
-function value = read_integer(cfg,name,defaultValue,minimum)
-value = read_scalar(cfg,name,defaultValue);
-if value ~= round(value) || value < minimum
-    error('fftCfg.%s must be an integer not smaller than %d.',name,minimum);
-end
-end
-
-function value = read_logical(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if ~islogical(value) || ~isscalar(value)
-    error('fftCfg.%s must be a logical scalar.',name);
-end
-end
-
-function value = read_scalar(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if isempty(value) || ~isnumeric(value) || ~isscalar(value) || ...
-        ~isreal(value) || ~isfinite(value)
-    error('fftCfg.%s must be a finite real scalar.',name);
-end
 end

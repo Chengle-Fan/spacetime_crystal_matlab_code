@@ -13,6 +13,9 @@ function fitResult = tl_fit_parameters(basePhysicalCfg,fitData,fitCfg)
 %   fitData.impedance.valueOhm [,uncertaintyOhm]
 %   fitData.anchors.boundaryFrequencyHz [,boundaryUncertaintyHz]
 %   fitData.anchors.fcolHz [,fcolUncertaintyHz]       (CROW only)
+% Anchors are lossless upper-branch frequencies of the configured circuit,
+% including finite Cblock. impedance is the reference sqrt(Ls/(C0+Cpar));
+% it is not a frequency-dependent measured input/Bloch impedance or S data.
 %
 % Positive parameters use logarithmic coordinates.  deltaC/C0 and
 % mutualS/Ls use bounded transforms.  The routine reports a local numerical
@@ -47,12 +50,12 @@ if strcmp(baseModel.kind,'sspp') && ...
 end
 data = prepare_data(fitData,fitCfg,baseModel);
 theta0 = encode_parameters(baseModel,parameterNames);
-maxIterations = read_integer(fitCfg,'maxIterations',400,1);
-maxEvaluations = read_integer(fitCfg,'maxEvaluations',2000,1);
+maxIterations = tl_option('integer',fitCfg,'maxIterations',400,1);
+maxEvaluations = tl_option('integer',fitCfg,'maxEvaluations',2000,1);
 displayMode = read_text(fitCfg,'display','off',{'off','iter','final','notify'});
 options = optimset('Display',displayMode,'MaxIter',maxIterations, ...
     'MaxFunEvals',maxEvaluations,'TolX',1e-9,'TolFun',1e-9);
-objective = @(theta) objective_value(theta,basePhysicalCfg, ...
+objective = @(theta) objective_value(theta,basePhysicalCfg,baseModel, ...
     parameterNames,data);
 [theta,objectiveValue,exitFlag,output] = fminsearch( ...
     objective,theta0,options);
@@ -119,7 +122,7 @@ if isfield(input,'staticDispersion') && ~isempty(input.staticDispersion)
     block.value = read_vector_field(block,'frequencyHz');
     assert_same_size(block.k,block.value,'static dispersion');
     block.band = read_band(block,numel(block.k));
-    defaultSigma = read_positive(cfg,'frequencyUncertaintyHz', ...
+    defaultSigma = tl_option('positive',cfg,'frequencyUncertaintyHz', ...
         max(median(abs(block.value))*0.01,1));
     block.sigma = read_uncertainty(block,'uncertaintyHz', ...
         numel(block.k),defaultSigma);
@@ -134,7 +137,7 @@ if isfield(input,'imagOmega') && ~isempty(input.imagOmega)
     block.value = read_vector_field(block,'imagOmegaRadPerSec');
     assert_same_size(block.k,block.value,'imaginary frequency');
     block.band = read_band(block,numel(block.k));
-    defaultSigma = read_positive(cfg,'imagOmegaUncertaintyRadPerSec', ...
+    defaultSigma = tl_option('positive',cfg,'imagOmegaUncertaintyRadPerSec', ...
         max(median(abs(block.value))*0.05,1));
     block.sigma = read_uncertainty(block,'uncertaintyRadPerSec', ...
         numel(block.k),defaultSigma);
@@ -146,7 +149,7 @@ end
 if isfield(input,'impedance') && ~isempty(input.impedance)
     block = input.impedance;
     block.value = read_vector_field(block,'valueOhm');
-    defaultSigma = read_positive(cfg,'impedanceUncertaintyOhm', ...
+    defaultSigma = tl_option('positive',cfg,'impedanceUncertaintyOhm', ...
         max(median(abs(block.value))*0.02,1e-3));
     block.sigma = read_uncertainty(block,'uncertaintyOhm', ...
         numel(block.value),defaultSigma);
@@ -196,10 +199,9 @@ data.summary = summary;
 end
 
 % -------------------------------------------------------------------------
-function value = objective_value(theta,baseCfg,names,data)
+function value = objective_value(theta,baseCfg,baseModel,names,data)
 try
-    seedModel = tl_build_model(baseCfg);
-    [cfg,~] = decode_parameters(theta,baseCfg,seedModel,names);
+    [cfg,~] = decode_parameters(theta,baseCfg,baseModel,names);
     residual = residual_vector(cfg,data);
     if any(~isfinite(residual))
         value = 1e100;
@@ -231,9 +233,9 @@ for index = 1:numel(data.blocks)
         case 'impedance'
             prediction = model.derived.Zreference*ones(size(block.value));
         case 'boundary'
-            prediction = model.derived.provisionalBoundaryFrequencyHz;
+            prediction = model.derived.staticBoundaryFrequencyHz;
         case 'fcol'
-            prediction = model.derived.fcolHz;
+            prediction = model.derived.staticCenterFrequencyHz;
     end
     residual = [residual;(prediction(:)-block.value(:))./block.sigma(:)]; %#ok<AGROW>
 end
@@ -424,22 +426,6 @@ end
 function value = validate_positive_scalar(value,label)
 value = validate_scalar(value,label);
 if value <= 0, error('%s must be positive.',label); end
-end
-
-function value = read_positive(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if isempty(value) || ~isnumeric(value) || ~isscalar(value) || ...
-        ~isreal(value) || ~isfinite(value) || value <= 0
-    error('fitCfg.%s must be a positive finite real scalar.',name);
-end
-end
-
-function value = read_integer(cfg,name,defaultValue,minimum)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
-        ~isfinite(value) || value ~= round(value) || value < minimum
-    error('fitCfg.%s must be an integer not smaller than %d.',name,minimum);
-end
 end
 
 function value = read_text(cfg,name,defaultValue,allowed)

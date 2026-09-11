@@ -30,8 +30,8 @@ function model = tl_build_model(physicalCfg)
 if nargin ~= 1 || ~isstruct(physicalCfg) || ~isscalar(physicalCfg)
     error('Use tl_build_model with one scalar physicalCfg struct.');
 end
-topology = read_text(physicalCfg,'topology','',{'sspp','crow'});
-allowAssumptions = read_logical(physicalCfg,'allowAssumptions',false);
+topology = tl_option('text',physicalCfg,'topology','',{'sspp','crow'});
+allowAssumptions = tl_option('logical',physicalCfg,'allowAssumptions',false);
 
 seed = paper_seed(topology);
 assumedFields = {'a','Ls','mutualS','Rs','Gp','Cpar','Zsource','Zload'};
@@ -51,31 +51,28 @@ if ~allowAssumptions && ~isempty(missingAssumptions)
         'simulation seed.'],strjoin(missingAssumptions,', '));
 end
 
-a = read_positive(physicalCfg,'a',seed.a);
-Ls = read_positive(physicalCfg,'Ls',seed.Ls);
-mutualS = read_finite_real(physicalCfg,'mutualS',seed.mutualS);
-Rs = read_nonnegative(physicalCfg,'Rs',seed.Rs);
-C0 = read_positive(physicalCfg,'C0',seed.C0);
-deltaC = read_nonnegative(physicalCfg,'deltaC',seed.deltaC);
-Gp = read_nonnegative(physicalCfg,'Gp',seed.Gp);
-Cpar = read_nonnegative(physicalCfg,'Cpar',0);
+a = tl_option('positive',physicalCfg,'a',seed.a);
+Ls = tl_option('positive',physicalCfg,'Ls',seed.Ls);
+mutualS = tl_option('real',physicalCfg,'mutualS',seed.mutualS);
+Rs = tl_option('nonnegative',physicalCfg,'Rs',seed.Rs);
+C0 = tl_option('positive',physicalCfg,'C0',seed.C0);
+deltaC = tl_option('nonnegative',physicalCfg,'deltaC',seed.deltaC);
+Gp = tl_option('nonnegative',physicalCfg,'Gp',seed.Gp);
+Cpar = tl_option('nonnegative',physicalCfg,'Cpar',0);
 totalC0 = C0+Cpar;
-fmHz = read_positive(physicalCfg,'fmHz',seed.fmHz);
-phase = read_finite_real(physicalCfg,'modulationPhase',0);
-modulationType = read_text(physicalCfg,'modulationType','sinusoidal', ...
+fmHz = tl_option('positive',physicalCfg,'fmHz',seed.fmHz);
+phase = tl_option('real',physicalCfg,'modulationPhase',0);
+modulationType = tl_option('text',physicalCfg,'modulationType','sinusoidal', ...
     {'sinusoidal','square'});
-dutyCycle = read_finite_real(physicalCfg,'dutyCycle',0.5);
-if dutyCycle <= 0 || dutyCycle >= 1
-    error('physicalCfg.dutyCycle must lie strictly between zero and one.');
-end
-Zsource = read_positive(physicalCfg,'Zsource',50);
-Zload = read_positive(physicalCfg,'Zload',50);
-cellCount = read_integer(physicalCfg,'cellCount',64,3);
+dutyCycle = tl_option('fraction',physicalCfg,'dutyCycle',0.5);
+Zsource = tl_option('positive',physicalCfg,'Zsource',50);
+Zload = tl_option('positive',physicalCfg,'Zload',50);
+cellCount = tl_option('integer',physicalCfg,'cellCount',64,3);
 
 if strcmp(topology,'crow')
-    L0 = read_positive(physicalCfg,'L0',seed.L0);
-    R0 = read_nonnegative(physicalCfg,'R0',seed.R0);
-    Cblock = read_positive_or_inf(physicalCfg,'Cblock',seed.Cblock);
+    L0 = tl_option('positive',physicalCfg,'L0',seed.L0);
+    R0 = tl_option('nonnegative',physicalCfg,'R0',seed.R0);
+    Cblock = tl_option('positive-or-inf',physicalCfg,'Cblock',seed.Cblock);
 else
     L0 = NaN;
     R0 = NaN;
@@ -92,9 +89,6 @@ end
 phaseByCell = read_cell_array(physicalCfg,'phaseByCell',0,cellCount,true);
 amplitudeScaleByCell = read_cell_array(physicalCfg, ...
     'amplitudeScaleByCell',1,cellCount,false);
-if any(amplitudeScaleByCell < 0)
-    error('physicalCfg.amplitudeScaleByCell must be nonnegative.');
-end
 if max(amplitudeScaleByCell)*deltaC >= C0
     error('Per-cell modulation would make at least one capacitance nonpositive.');
 end
@@ -103,10 +97,6 @@ Omega = 2*pi*fmHz;
 T = 1/fmHz;
 capMin = totalC0-deltaC;
 capMax = totalC0+deltaC;
-if strcmp(modulationType,'square')
-    capMin = totalC0-deltaC;
-    capMax = totalC0+deltaC;
-end
 
 if strcmp(topology,'sspp')
     stateDimension = 2;
@@ -179,6 +169,16 @@ model.derived.provisionalBoundaryFrequencyHz = ...
 model.derived.Zreference = sqrt(Ls/totalC0);
 model.derived.longWaveVelocity = a/sqrt((Ls+2*mutualS)*totalC0);
 model.derived.effectiveBoundaryInductance = Ls-2*mutualS;
+% Retain the idealized paper anchors above for compatibility. These two
+% frequencies describe the actual configured lossless circuit, including
+% the DC-block capacitor, and are used by fitting and component screening.
+if strcmp(topology,'crow')
+    staticOmega = tl_static_omega([0 pi],Ls,mutualS,totalC0,L0,Cblock);
+else
+    staticOmega = tl_static_omega([0 pi],Ls,mutualS,totalC0,Inf,Inf);
+end
+model.derived.staticCenterFrequencyHz = staticOmega(1)/(2*pi);
+model.derived.staticBoundaryFrequencyHz = staticOmega(2)/(2*pi);
 
 snapshot = model;
 snapshot = rmfield(snapshot,'functions');
@@ -418,87 +418,6 @@ for k = kValues
 end
 if ~isfinite(omegaMax) || omegaMax <= 0
     error('Unable to determine a positive finite circuit frequency bound.');
-end
-end
-
-% -------------------------------------------------------------------------
-function value = read_text(cfg,name,defaultValue,allowed)
-if isfield(cfg,name) && ~isempty(cfg.(name))
-    value = cfg.(name);
-else
-    value = defaultValue;
-end
-if isstring(value) && isscalar(value)
-    value = char(value);
-elseif ~ischar(value) || size(value,1) ~= 1
-    error('physicalCfg.%s must be a text scalar.',name);
-end
-match = strcmpi(value,allowed);
-if ~any(match)
-    error('physicalCfg.%s must be one of: %s.',name,strjoin(allowed,', '));
-end
-value = allowed{find(match,1)};
-end
-
-% -------------------------------------------------------------------------
-function value = read_logical(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name))
-    value = cfg.(name);
-else
-    value = defaultValue;
-end
-if ~islogical(value) || ~isscalar(value)
-    error('physicalCfg.%s must be a logical scalar.',name);
-end
-end
-
-% -------------------------------------------------------------------------
-function value = read_positive(cfg,name,defaultValue)
-value = read_finite_real(cfg,name,defaultValue);
-if value <= 0
-    error('physicalCfg.%s must be positive.',name);
-end
-end
-
-% -------------------------------------------------------------------------
-function value = read_positive_or_inf(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name))
-    value = cfg.(name);
-else
-    value = defaultValue;
-end
-if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
-        isnan(value) || value <= 0
-    error('physicalCfg.%s must be positive and may be Inf.',name);
-end
-end
-
-% -------------------------------------------------------------------------
-function value = read_nonnegative(cfg,name,defaultValue)
-value = read_finite_real(cfg,name,defaultValue);
-if value < 0
-    error('physicalCfg.%s must be nonnegative.',name);
-end
-end
-
-% -------------------------------------------------------------------------
-function value = read_finite_real(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name))
-    value = cfg.(name);
-else
-    value = defaultValue;
-end
-if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ~isfinite(value)
-    error('physicalCfg.%s must be a finite real scalar.',name);
-end
-end
-
-% -------------------------------------------------------------------------
-function value = read_integer(cfg,name,defaultValue,minimumValue)
-value = read_finite_real(cfg,name,defaultValue);
-if value ~= round(value) || value < minimumValue
-    error('physicalCfg.%s must be an integer not smaller than %d.', ...
-        name,minimumValue);
 end
 end
 

@@ -1,4 +1,4 @@
-# Transmission line：时变传输线电路仿真
+# Transmission line：SSPP/CROW 平台通用电路仿真
 
 当前模型与根仓库同步为 **V3.1 / 3.1.0**。
 
@@ -10,7 +10,7 @@
 
 所以 `Im(omega)>0` 表示增长。
 
-参考论文只用于 SSPP/CROW 实验拓扑和文中明确给出的参数种子，不用于复现其研究结论。论文没有给出晶格常数、完整电感/互感、损耗、端口、器件型号和测量链；因此默认示例必须显式设置 `allowAssumptions=true`，其结果只能称为 simulation seed，不能称为实验 BOM。
+本目录面向与 [参考论文](../Full_momemtum/2604.17408v1.pdf) 相同的 SSPP/CROW 实验平台，提供通用、可配置的等效电路模型。论文数值仅作默认示例，不要求用户沿用，也不以得到论文中的带隙形状作为求解器正确性的标准。实际样品应覆盖晶格常数、R/L/C/G、互感、调制与端口参数；`allowAssumptions=true` 允许使用尚未标定的示例值。
 
 ## 文件与入口
 
@@ -42,7 +42,9 @@ run_tl_fdtd_fft
 /Applications/MATLAB_R2026a.app/bin/matlab -batch "validate_tl_suite"
 ```
 
-核心函数只使用 Base MATLAB，不依赖根目录函数、工作区缓存或 MAT 文件。
+核心函数只使用 Base MATLAB，不依赖根目录函数、工作区缓存或 MAT 文件。`private/` 合并了参数校验、时间分层、本征矢归一化、模式匹配、静态电路色散和 FFT 功率折叠；复制本模块时须连同该目录一起复制。
+
+本轮精简审查、短路边界修复及运行验证结果见 [REVIEW.md](REVIEW.md)。
 
 ## 统一模型
 
@@ -57,7 +59,9 @@ model = tl_build_model(physicalCfg);
 
 内部状态不是直接的 V/I，而是整数时间节点的电荷 Q 和半整数时间支路的磁链 Φ。这样在理想电容时间界面，Q/Φ 连续而 V/I 可以跃变，不会遗漏时变电容的泵浦项。`model.snapshot` 不含函数句柄，可直接随结果归档。
 
-论文种子的两个首要单位回归是：SSPP 的 `Ls-2*S≈37.18 nH`，以及在默认 `Cpar=0` 时 CROW 的 `1/(2*pi*sqrt(L0*C0))≈314.7 MHz`。
+SSPP 采用串联电感（含相邻互感）和并联时变电容；CROW 在此基础上增加与节点电容并联的 `R0–L0–Cblock` 串联支路。`Cblock=Inf` 保留理想电感支路极限，有限 `Cblock` 则完整保留两对动态模式。
+
+`derived.staticCenterFrequencyHz/staticBoundaryFrequencyHz` 是实际配置的无损上支带心/带边频率，包含有限 `Cblock`。兼容字段 `fcolHz/provisionalBoundaryFrequencyHz` 仍表示忽略隔直电容的理想参考值。损耗存在时，复本征频率由 PWE/TMM 计算。
 
 ## PWE 与 TMM
 
@@ -71,7 +75,7 @@ tmmCfg = struct('temporalSlices',1024);
 tmm = tl_tmm_bands(model,k,tmmCfg);
 ```
 
-PWE 返回原始 Floquet 副本、折叠谱、中心谐波/可观测权重、选中分支和左右本征矢条件数。TMM 对方波使用精确常值层，对正弦波使用中点 `expm` 切片。两者都不在简并点强行赋予物理分支身份；提高 `Mtime/Nt` 或 `temporalSlices` 后应做集合意义的收敛比较。
+PWE 返回原始 Floquet 副本、折叠谱、中心谐波/可观测权重、选中分支和左右本征矢条件数。选带时同时检查频差与谐波平移后的本征矢，排除同一模式的重复副本，并保留独立的简并模式。TMM 对方波使用精确常值层，对正弦波使用中点 `expm` 切片。两者都不在简并点强行赋予物理分支身份；提高 `Mtime/Nt` 或 `temporalSlices` 后应做集合意义的收敛比较。
 
 ## 有限链 FDTD
 
@@ -94,13 +98,15 @@ field.branch.x, field.branch.tHalf
 field.branch.IHalf, field.branch.PhiHalf, field.branch.IAtNodeTime
 ```
 
-`IAtNodeTime` 是相邻两个半时间电流的中心平均，允许与节点时间数据共同绘图或做 x–t FFT。内部推进始终为 double，`precision='single'` 只压缩历史数组。稳定性强制 `dt*omegaMaximum<=1.8`。逐 `k_c` 扫描只复用带完整模型快照和边界拓扑的 `stabilityAudit`，不会省略任何有限链推进。`open` 表示电路开路端，并非无反射空间边界；`matched` 只是按给定端口阻抗加终端电导。`field.energy` 给出源功、泵浦功、R/G 耗散、端口耗散和数值账本残差。
+`IAtNodeTime` 是相邻两个半时间电流的中心平均，允许与节点时间数据共同绘图或做 x–t FFT。内部推进始终为 double，`precision='single'` 只压缩历史数组。稳定性强制 `dt*omegaMaximum<=1.8`。逐 `k_c` 扫描只复用带完整模型快照和边界拓扑的 `stabilityAudit`，不会省略任何有限链推进。`open` 表示电路开路端，并非无反射空间边界；`matched` 只是按给定端口阻抗加终端电导，并非对所有频率都无反射。戴维南源位于任一端点时，其 `source.impedance` 取代该端终端阻抗；位于内部节点时，它是额外的局部驱动支路。`waveformFcn` 是发生器开路电压，不能直接当作节点电压。
+
+`field.energy` 给出源功、泵浦功、串联损耗 `seriesDissipation`、CROW 谐振支路损耗 `resonatorDissipation`、并联及端口损耗。功率积分使用时间中点，物理能量账本残差应随 `dt` 减小收敛。`field.resonator.IAtNodeTime` 与节点时间对齐，便于比较 CROW 的空间—时间电流分布。
 
 `I` 只是局域磁场的电路代理，`V` 只是电场代理；两者不等于 PCB 的三维全波场。
 
 ## FFT 输入约束
 
-主入口 `run_tl_fdtd_fft` 不再把一次端口脉冲的空间 FFT 波数或无限周期体的 Bloch `k` 冒充实验式逐列激发。它对每个高斯源中心 `k_c` 独立构造具有指定强度 FWHM 的复电压波包，用波包中心处的瞬时局域单胞模态补全 Q/Φ（CROW 还补全谐振器状态），调用 `tl_fdtd1d` 推进完整有限链，只把多个固定节点的复电压 `V(t)` 交给 FFT。若 `phaseByCell/amplitudeScaleByCell` 使初始电容非均匀，代码仍用每节点实际电容令 `Q_i=C_iV_i`，保证指定的 `V(x,0)` 精确成立，同时警告其余伴随状态只是中心局域窄带近似。无损模型的群速度在邻近 k 用电路能量内积连续跟踪同一模态；有损模型会明确标记这只是右本征矢连续性启发式，例外点附近应改用端口激励或双正交分析。半时间电流包络再按离散 leapfrog 群速度回退半步；SSPP 的 `k_c=0` 模式用 `zeroKPropagationDirection` 指定的 `k→0` 阻抗极限并核查定向功率，若有损/过阻尼模型没有可分辨传播方向则拒绝伪造“单向”初值：
+数值诊断入口 `run_tl_fdtd_fft` 对每个高斯源中心 `k_c` 独立构造具有指定强度 FWHM 的复电压波包，用波包中心处的瞬时局域单胞模态补全 Q/Φ（CROW 还补全谐振器状态），调用 `tl_fdtd1d` 推进完整有限链，只把多个固定节点的复电压 `V(t)` 交给 FFT。若 `phaseByCell/amplitudeScaleByCell` 使初始电容非均匀，代码仍用每节点实际电容令 `Q_i=C_iV_i`，保证指定的 `V(x,0)` 精确成立，同时警告其余伴随状态只是中心局域窄带近似。无损模型的群速度在邻近 k 用电路能量内积连续跟踪同一模态；有损模型会明确标记这只是右本征矢连续性启发式，例外点附近应改用端口激励或双正交分析。半时间电流包络再按离散 leapfrog 群速度回退半步；SSPP 的 `k_c=0` 模式用 `zeroKPropagationDirection` 指定的 `k→0` 阻抗极限并核查定向功率，若有损/过阻尼模型没有可分辨传播方向则拒绝伪造“单向”初值：
 
 ```matlab
 scan = tl_fdtd_gaussian_k_scan(model,scanCfg);
@@ -112,7 +118,22 @@ bands = tl_fdtd_fft_bands( ...
 
 结果同时返回 `foldedPower`、`rawPower`、未归一化 `rawColumnPower`、`activeKMask`、全局/逐列归一化功率和窗/采样元数据。所有 FFT 功率使用周期 Hann 的相干振幅校正；格点复指数的峰值不随零填充因子改变，连续谱积分则必须乘相应的频率 bin 宽（x–t 谱乘 k–ω bin 面积）。逐列归一化只用于观察峰位；零填充只改变绘图间距，原生归一化频率分辨率仍是 `1/analysisPeriodCount`。横轴是有限波包的中心 `k_c`，每列含宽度约由 FWHM 决定的 Bloch 波数组合，因此只能称为有限源、有限链、有限窗响应，不能当成无限体精确本征值，也不能从线宽读取 `Im(omega)`。
 
-`tl_xt_fft_bands` 仍可分析一次宽带端口激励的 signed x–t 数据；其可选 `maximumPhysicalOmega` 只限制进入 Floquet 折叠的 raw 频率 bin，完整 raw 谱仍保留。`tl_bloch_fft_bands` 仍可作无限周期体数值回归。两者的横轴与边界条件必须分别标注，不能与上述主图混用。科研使用应分别改变波包 FWHM、探针位置、链长/边界距离、`dt`、分析周期数和零填充因子，确认峰位对前五项收敛且不把零填充误作分辨率提升。
+与实验的一次局部激励、逐位置时域扫描对应时，应使用 `tl_fdtd1d` 加 `tl_xt_fft_bands` 分析 signed x–t 数据；其可选 `maximumPhysicalOmega` 只限制进入 Floquet 折叠的 raw 频率 bin，完整 raw 谱仍保留。`tl_bloch_fft_bands` 仍可作无限周期体数值回归。两者的横轴与边界条件必须分别标注，不能与上述主图混用。科研使用应分别改变波包 FWHM、探针位置、链长/边界距离、`dt`、分析周期数和零填充因子，确认峰位对前五项收敛且不把零填充误作分辨率提升。
+
+## 与实验信号对应
+
+| 实验量或操作 | 对应仿真 |
+|---|---|
+| 局部天线/端口注入脉冲 | `source.type='current'` 或 `'thevenin'`，设实际源位置、波形和阻抗 |
+| 电压或电场探针 | `field.node.V`，电场比例需结合探针与结构标定 |
+| SSPP 磁近场 | `field.branch.IAtNodeTime` 的局部电流代理 |
+| CROW 谐振器磁近场 | `field.resonator.IAtNodeTime` 的局部电流代理 |
+| 扫描空间—时间信号后求色散 | 对有符号 V/I 波形做 `tl_xt_fft_bands`，先看 `rawOmega/rawPower` |
+| 理想无限周期结构的本征频率、增长率 | PWE/TMM，结合有限样品响应判断可观测性 |
+
+做 FFT 时输入原始带符号的波形或复解析信号，不能输入 `abs(I).^2`：后者适用于场强图，会丢失相位并产生倍频。有限链长度、泵浦启动时刻、探针位置、采样窗和终端阻抗应与实验一致。真实磁探针通常接收多个局部电流的加权响应；绝对场强需加入探针传递函数，电路求解器本身不输出三维 `Hz`。
+
+逐 `k_c` 的初始高斯波包扫描保留为独立数值功能，其横轴表示源中心波数；一次局部源实验的 x–t FFT 横轴来自空间采样，两种激励流程不可直接等同。`tl_xt_fft_bands` 的无调制参考数据必须另算，且应使用相同源、边界和采样网格。参考掩码只辅助识别激励覆盖，完整 raw/折叠功率仍保留。
 
 ## 参数反演
 
@@ -125,7 +146,7 @@ fitCfg.parameterNames = {'Ls','mutualS'};
 fit = tl_fit_parameters(physicalCfg,fitData,fitCfg);
 ```
 
-可用数据块和字段见 `help tl_fit_parameters`。只有色散时通常只能稳健确定 LC 组合；要分别确定 L/C 需要 V/I 比、输入阻抗或 S 参数。要分离 `Rs/Gp/R0`，需要传播衰减、谐振线宽和时域衰减。`isLocallyIdentifiable=false` 时，不应引用单个最佳值作为实验参数。最终还应保留独立验证集。
+可用数据块和字段见 `help tl_fit_parameters`。`anchors.fcolHz/boundaryFrequencyHz` 使用实际有限 `Cblock` 电路的无损上支频率。只有色散时通常只能稳健确定 LC 组合。当前 `impedance.valueOhm` 只拟合参考尺度 `sqrt(Ls/(C0+Cpar))`，不是频率相关的输入阻抗、CROW 的 Bloch 阻抗或原始 S 参数接口；这些实验数据需要相应前向模型和去嵌处理后才能用于标定。要分离 `Rs/Gp/R0`，需要传播衰减、谐振线宽和时域衰减。`isLocallyIdentifiable=false` 时，不应引用单个最佳值作为实验参数。最终还应保留独立验证集。
 
 ## 器件目录与筛选
 
@@ -141,7 +162,7 @@ catalog.capacitors = struct( ...
 report = tl_select_components(model,catalog,struct());
 ```
 
-`value` 对电感用 H，对电容/变容管用 F；`toleranceFraction=0.05` 表示 ±5%。筛选只把满足 `srfHz >= srfSafetyFactor*maximumFrequencyHz` 的候选纳入最近标称值比较，并至少运行 1000 个固定种子容差样本。`C0` 与 `Cpar` 都是去嵌后的等效量，不能直接用一只最近值电容替代；如果输入的 `C0` 已包含焊盘、偏置和封装寄生，就必须保持 `Cpar=0`。
+`value` 对电感用 H，对电容/变容管用 F；`toleranceFraction=0.05` 表示 ±5%。筛选只把满足 `srfHz >= srfSafetyFactor*maximumFrequencyHz` 的候选纳入最近标称值比较，并至少运行 1000 个固定种子容差样本。CROW 的带心/带边容差均包含 `L0` 与有限 `Cblock` 的候选值及容差。`C0` 与 `Cpar` 都是去嵌后的等效量，不能直接用一只最近值电容替代；如果输入的 `C0` 已包含焊盘、偏置和封装寄生，就必须保持 `Cpar=0`。
 
 ## 进入实验参数阶段前仍需的数据
 

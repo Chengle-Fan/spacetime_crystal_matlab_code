@@ -50,35 +50,35 @@ end
 
 kScan = validate_k_scan(scanCfg.kScan,model.cell.a);
 nK = numel(kScan);
-dt = read_positive(scanCfg,'dt',[]);
-nSteps = read_integer(scanCfg,'nSteps',[],1);
-recordEvery = read_integer(scanCfg,'recordEvery',1,1);
+dt = tl_option('positive',scanCfg,'dt',[]);
+nSteps = tl_option('integer',scanCfg,'nSteps',[],1);
+recordEvery = tl_option('integer',scanCfg,'recordEvery',1,1);
 if mod(nSteps,recordEvery) ~= 0
     error('scanCfg.recordEvery must divide scanCfg.nSteps.');
 end
-fwhmCells = read_positive(scanCfg,'pulseIntensityFwhmCells',[]);
-voltageAmplitude = read_positive(scanCfg,'voltageAmplitude',[]);
+fwhmCells = tl_option('positive',scanCfg,'pulseIntensityFwhmCells',[]);
+voltageAmplitude = tl_option('positive',scanCfg,'voltageAmplitude',[]);
 nNode = model.finite.cellCount;
-centerNode = read_integer(scanCfg,'centerNode',[],1);
+centerNode = tl_option('integer',scanCfg,'centerNode',[],1);
 if centerNode > nNode
     error('scanCfg.centerNode exceeds the finite node count.');
 end
 probeNodeIndices = validate_indices( ...
     scanCfg.probeNodeIndices,nNode,'scanCfg.probeNodeIndices');
-precision = read_text(scanCfg,'precision','single',{'single','double'});
-boundaryType = read_text(scanCfg,'boundaryType','open', ...
+precision = tl_option('text',scanCfg,'precision','single',{'single','double'});
+boundaryType = tl_option('text',scanCfg,'boundaryType','open', ...
     {'open','matched','short'});
-modulationEnabled = read_logical(scanCfg,'modulationEnabled',true);
-modulationStart = read_nonnegative(scanCfg,'modulationStart',0);
-modulationEnd = read_positive_or_inf(scanCfg,'modulationEnd',Inf);
-initialTailTolerance = read_fraction( ...
+modulationEnabled = tl_option('logical',scanCfg,'modulationEnabled',true);
+modulationStart = tl_option('nonnegative',scanCfg,'modulationStart',0);
+modulationEnd = tl_option('positive-or-inf',scanCfg,'modulationEnd',Inf);
+initialTailTolerance = tl_option('fraction', ...
     scanCfg,'initialTailTolerance',1e-4);
-requireNoBoundaryArrival = read_logical( ...
+requireNoBoundaryArrival = tl_option('logical', ...
     scanCfg,'requireNoBoundaryArrival',true);
-progressEvery = read_integer( ...
+progressEvery = tl_option('integer', ...
     scanCfg,'progressEvery',max(1,ceil(nK/10)),1);
-returnProbeSignals = read_logical(scanCfg,'returnProbeSignals',true);
-zeroKPropagationDirection = read_real( ...
+returnProbeSignals = tl_option('logical',scanCfg,'returnProbeSignals',true);
+zeroKPropagationDirection = tl_option('real', ...
     scanCfg,'zeroKPropagationDirection',1);
 if ~ismember(zeroKPropagationDirection,[-1 1])
     error('scanCfg.zeroKPropagationDirection must equal -1 or +1.');
@@ -86,13 +86,13 @@ end
 
 if isfield(scanCfg,'targetInitialFrequencyHz') && ...
         ~isempty(scanCfg.targetInitialFrequencyHz)
-    targetOmega = 2*pi*read_nonnegative( ...
+    targetOmega = 2*pi*tl_option('nonnegative', ...
         scanCfg,'targetInitialFrequencyHz',[]);
 else
     targetOmega = model.modulation.OmegaRadPerSec/2;
 end
 if isfield(scanCfg,'representativeK') && ~isempty(scanCfg.representativeK)
-    representativeK = read_real(scanCfg,'representativeK',[]);
+    representativeK = tl_option('real',scanCfg,'representativeK',[]);
 else
     representativeK = kScan(ceil(nK/2));
 end
@@ -123,7 +123,7 @@ if requireNoBoundaryArrival && ...
         'to false and perform a boundary convergence study.']);
 end
 
-if strcmp(boundaryType,'short') && any(probeNodeIndices == [1 nNode])
+if strcmp(boundaryType,'short') && any(ismember(probeNodeIndices,[1 nNode]))
     error('Voltage probes at short-circuited terminal nodes are not useful.');
 end
 nBranch = nNode-1;
@@ -521,65 +521,5 @@ if ~isnumeric(value) || isempty(value) || ~isvector(value) || ...
         any(value ~= round(value)) || any(value < 1) || any(value > count) || ...
         numel(unique(value)) ~= numel(value)
     error('%s must contain unique valid integer indices.',label);
-end
-end
-
-function value = read_text(cfg,name,defaultValue,allowed)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if isstring(value) && isscalar(value), value = char(value); end
-if ~ischar(value) || size(value,1) ~= 1
-    error('scanCfg.%s must be a text scalar.',name);
-end
-match = strcmpi(value,allowed);
-if ~any(match)
-    error('scanCfg.%s must be one of: %s.',name,strjoin(allowed,', '));
-end
-value = allowed{find(match,1)};
-end
-
-function value = read_logical(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if ~islogical(value) || ~isscalar(value)
-    error('scanCfg.%s must be a logical scalar.',name);
-end
-end
-
-function value = read_positive(cfg,name,defaultValue)
-value = read_real(cfg,name,defaultValue);
-if value <= 0, error('scanCfg.%s must be positive.',name); end
-end
-
-function value = read_nonnegative(cfg,name,defaultValue)
-value = read_real(cfg,name,defaultValue);
-if value < 0, error('scanCfg.%s must be nonnegative.',name); end
-end
-
-function value = read_integer(cfg,name,defaultValue,minimum)
-value = read_real(cfg,name,defaultValue);
-if value ~= round(value) || value < minimum
-    error('scanCfg.%s must be an integer not smaller than %d.',name,minimum);
-end
-end
-
-function value = read_real(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if isempty(value) || ~isnumeric(value) || ~isscalar(value) || ...
-        ~isreal(value) || ~isfinite(value)
-    error('scanCfg.%s must be a finite real scalar.',name);
-end
-end
-
-function value = read_positive_or_inf(cfg,name,defaultValue)
-if isfield(cfg,name) && ~isempty(cfg.(name)), value = cfg.(name); else, value = defaultValue; end
-if ~isnumeric(value) || ~isscalar(value) || ~isreal(value) || ...
-        isnan(value) || value <= 0
-    error('scanCfg.%s must be positive and may be Inf.',name);
-end
-end
-
-function value = read_fraction(cfg,name,defaultValue)
-value = read_real(cfg,name,defaultValue);
-if value <= 0 || value >= 1
-    error('scanCfg.%s must lie strictly between zero and one.',name);
 end
 end
